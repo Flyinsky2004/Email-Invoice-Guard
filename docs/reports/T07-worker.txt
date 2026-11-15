@@ -1,0 +1,197 @@
+T07 — Telegram worker completion report
+=======================================
+
+Commits (branch task/T07-telegram):
+- 2cd4f5e2a9bd6e8eca1d1eea79de1dc940a885d5  feat(telegram): implement T07 module and tests
+- a0bd66268cea6235d3b75232d2bfd94d33ef44fc  fix(telegram): align trusted invoice URL and unblock polling
+- 5e1e4d8a61aa9e96cbaf2987ac6bbc2428e8eeb7  fix(telegram): retry transient reads and prefer payload mail
+
+Worktree: /Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t07
+
+1. Modified files (committed)
+-----------------------------
+- internal/telegram/api.go        Telegram Bot API client (getUpdates, sendMessage,
+                                  editMessageText, answerCallbackQuery), error
+                                  classification, token redaction.
+- internal/telegram/bot.go        New/Run, long-poll loop with persisted offset and
+                                  bounded backoff, concurrent outbox loop, rate limiter,
+                                  background-sync lifecycle.
+- internal/telegram/auth.go       User+chat authorization, callback_data encoding,
+                                  exact trusted invoice URL validation, keyboard.
+- internal/telegram/format.go     FormatEmail/FormatInvoice, location-aware private
+                                  renderers, HTML escaping, UTF-16 chunking, HTML-to-text.
+- internal/telegram/commands.go   All required commands, bounded lists, async /sync,
+                                  dynamic-timezone display.
+- internal/telegram/settings.go   /settings timezone/reminder/sync/folder with validation.
+- internal/telegram/callbacks.go  Two-stage payment confirmation, undo/cancel, mail and
+                                  invoice viewing, asset history, account removal.
+- internal/telegram/delivery.go   DeliverOnce: claim, stale-reminder skip, pre-send
+                                  reminder re-check after rate limiting, per-part
+                                  recording, partial failure, UNKNOWN classification.
+- internal/telegram/*_test.go     79 test functions with embedded core.Store fake and
+                                  mock Telegram HTTP server.
+- LESSONS.md                      Appended T07 lessons (append-only).
+
+No changes to internal/core, go.mod, go.sum, docs, SPEC.md, or other worktrees.
+.omc/ remains untracked and was not committed.
+
+2. Behavior implemented
+-----------------------
+- Public API: telegram.New / Bot.Run / Bot.DeliverOnce / FormatEmail / FormatInvoice
+  match the frozen signatures exactly.
+- Long polling: getUpdates with allowed_updates message+callback_query; offset stored
+  in settings key telegram_update_offset and resumed after restart; cancellation stops
+  both loops; API failures retried with bounded exponential backoff (1s..30s) and
+  retry_after honored; no webhook.
+- Outbox sender runs concurrently with polling. DeliverOnce atomically claims one due
+  job, re-reads the invoice for invoice/reminder payloads, skips reminders whose
+  invoice is no longer PENDING_CONFIRMATION, renders the latest stored status, sends
+  every part with global+per-chat rate intervals, records each acknowledged part via
+  RecordTelegramMessage, skips parts returned by DeliveryMessages on retry, and calls
+  CompleteDelivery with all retained+new part IDs.
+- Reminder safety: status is re-checked immediately before every send, after the
+  rate-limit wait. A payment confirmed while the reminder waits suppresses the send
+  (SkipDelivery). An already-sent part cannot be recalled; that practical limit is
+  documented.
+- Persistence error boundary: only core.ErrNotFound marks a delivery SKIPPED. Any
+  other GetInvoice/GetEmail/GetAccount error (database busy, proxy/store failure)
+  calls FailDelivery(unknown=false) so the job retries instead of being discarded. A
+  missing account still renders historical mail with a minimal account record.
+- Invoice keyboard: the "Original mail" callback prefers the payload EmailID that
+  triggered this notification, so a second mail for the same invoice opens its own
+  full text. A clone of the invoice is used for the keyboard; the persisted invoice's
+  SourceEmailID is never mutated.
+- Failure handling: 429/HTTP rejections -> FailDelivery(unknown=false) with retry_after
+  delay; transport/timeout/corrupt-200/missing-message-id -> FailDelivery(unknown=true);
+  missing source -> SkipDelivery. No secrets in persisted reasons or logs.
+- Formatting: account/provider/from/vendor/category/subject/time/full body/links/
+  attachment count+names; HTML-only bodies converted locally with x/net/html; every
+  part independently valid escaped HTML and <=4096 UTF-16 units; long content split
+  without truncation; zero attachments and unknown vendor/category shown explicitly.
+  Invoice output includes all items, prices, discounts, host, OS, service period,
+  due/created dates, confirmed-at time, review reasons and the manual-status note.
+- Timezone: exported FormatEmail/FormatInvoice default to Asia/Taipei; Bot uses
+  formatEmailAt/formatInvoiceAt with the dynamic timezone setting (fallback cfg,
+  then Asia/Taipei). Times always show zone name and numeric offset.
+- Commands: /start /help /add /accounts /remove /sync /latest /search /invoices
+  /pending /paid /overdue /assets /providers /status /settings. Lists are bounded and
+  carry callbacks that fetch the complete individual mail/invoice/asset history.
+- /sync replies immediately ("Sync started in the background."), runs in a cancellable
+  goroutine bounded to 10 minutes, rejects a second concurrent run, propagates bot
+  cancellation, and Run waits up to 5 seconds for it to exit during shutdown.
+- /add microsoft|qq calls the injected AccountOnboarding.Begin with the sender ID.
+  /remove validates ownership, requires confirmation (button or "confirm"), then soft
+  disables via RemoveAccount. /settings validates IANA timezone, HH:MM reminder,
+  positive bounded sync seconds, and folder on/off after checking account ownership
+  and folder existence, persisting through SetSetting/SaveFolder.
+- Payment flow: the initial "Mark paid" button only opens a second confirmation;
+  Confirm/Undo/Cancel run only from their callbacks. Replays are idempotent. Stored
+  invoice messages are edited after transitions; edit failures are logged and never
+  roll back the committed paid state.
+- Trusted invoice URL: only https://my.rfchost.com/viewinvoice.php?id=<digits> is
+  accepted. Extra query parameters (including redirect), duplicate id, non-numeric id,
+  userinfo, non-443 port, fragment, other paths or hosts are rejected. The exact
+  fixture https://my.rfchost.com/viewinvoice.php?id=143058 is asserted in tests.
+- Integration clarification applied: Kind is email/invoice/reminder; reminder
+  deliveries recompute days-to-due or overdue days from the current local date instead
+  of trusting payload.Text; each outbox job sends exactly one enhanced invoice
+  notification (no ordinary email duplicate).
+
+3. Actual commands and results
+-----------------------------
+$ gofmt -w internal/telegram
+  (no output; gofmt -l internal/telegram is empty)
+$ go vet ./internal/telegram/
+  (no output; pass)
+$ go test -count=1 ./internal/telegram/
+  ok  	email-invoice-guard/internal/telegram	1.600s
+$ go test -race -count=1 ./internal/telegram/
+  ok  	email-invoice-guard/internal/telegram	2.647s
+$ go test -cover -count=1 ./internal/telegram/
+  ok  	email-invoice-guard/internal/telegram	1.590s	coverage: 82.0% of statements
+$ go test -list '^Test' ./internal/telegram/ | grep -c '^Test'
+  79 test functions
+$ git diff --name-only HEAD~3 HEAD
+  LESSONS.md and internal/telegram/* only
+$ git status --short
+  ?? .omc/   (pre-existing untracked, not committed)
+
+4. Acceptance criteria
+----------------------
+- Public API compiles against frozen core: SATISFIED (go build/vet clean).
+- Long polling, persisted offset, cancellation, bounded retry, concurrent outbox,
+  no webhook: SATISFIED (polling/restart/cancellation/retry tests).
+- User whitelist AND configured chat enforced for messages and callbacks; denied
+  callbacks still answered: SATISFIED (spoof tests).
+- callback_data <=64 bytes, short action + 32-hex IDs, unknown actions fail closed:
+  SATISFIED (length/round-trip/fail-closed tests).
+- Two-stage paid confirmation, replay idempotency, undo, optional cancel, message
+  edits on transition, edit failure does not undo paid: SATISFIED.
+- All required commands with meaningful results; bounded lists + full-item callbacks;
+  /add onboarding; /remove soft disable with confirmation; /settings validation and
+  persistence; /assets provider filter and history: SATISFIED.
+- /sync asynchronous, immediate reply, duplicate-run guard, cancellation and shutdown
+  management: SATISFIED (background sync and Run-cancellation tests).
+- FormatEmail completeness, HTML-only conversion, escaping, <=4096 UTF-16 chunking,
+  no truncation, explicit zero attachments/unknown vendor, dynamic timezone: SATISFIED.
+- FormatInvoice completeness, confirmed-at timezone, exact trusted-URL validation,
+  original-mail callback, one enhanced notification per invoice job: SATISFIED.
+- DeliverOnce claim, stale-reminder skip, pre-send reminder re-check after the
+  rate-limit wait, latest status, rate interval, 429 retry_after, HTTP failure,
+  transport timeout UNKNOWN, partial persistence, CompleteDelivery with all IDs:
+  SATISFIED (queued -> limiter wait -> confirm -> no send test).
+- Transient store reads are retried rather than skipped; only ErrNotFound is SKIPPED:
+  SATISFIED (invoice/email/account transient-read tests and missing-source tests).
+- Invoice keyboard prefers the triggering payload EmailID without mutating the
+  persisted invoice: SATISFIED (duplicate invoice with different email test asserts
+  the button target, immutability, and retrieval of the second mail's full text).
+- Tests mock getUpdates/sendMessage/editMessageText/answerCallbackQuery and cover
+  whitelist/chat spoof, two-stage/replay/undo, long unicode/escaped HTML, callback64,
+  RetryAfter/timeout/partial failures, original email completeness, restart offset,
+  pre-send reminder state, dynamic timezone, and malicious invoice URLs: SATISFIED.
+- Dependencies untouched; only allowlisted paths committed; report supplied:
+  SATISFIED.
+
+5. Unresolved issues / limitations
+----------------------------------
+- At-least-once delivery only. An ambiguous send (timeout, corrupt 200, missing
+  message_id) is marked UNKNOWN and retried; the message may be duplicated. No
+  exactly-once claim is made. If RecordTelegramMessage fails after an acknowledged
+  send, a retry may resend that part.
+- Poll offset is persisted after a batch is handled. A crash mid-batch replays that
+  batch; commands are safe to replay, but /sync may run twice.
+- An external send already in flight cannot be recalled atomically when the user
+  confirms payment; only not-yet-sent reminder parts are suppressed by the pre-send
+  re-check.
+- Message edits after a status change rely on previously stored Telegram IDs; parts
+  whose IDs were never persisted cannot be edited. Those edits rebuild the keyboard
+  from the persisted invoice, so after a status change the "Original mail" entry
+  points at SourceEmailID; the initial delivery keyboard correctly points at the
+  triggering mail.
+- Background /sync is bounded to 10 minutes and shutdown waits at most 5 seconds for
+  it; a provider client that ignores context could outlive Run briefly.
+- No live Telegram credentials were used; all network behavior is exercised through
+  the injected HTTP client and mock server.
+
+6. Dependency / contract requests
+---------------------------------
+- None. No core, schema, or go.mod changes are required.
+- Trusted invoice URL now matches the real fixture
+  https://my.rfchost.com/viewinvoice.php?id=143058; if the parser accepts additional
+  query keys, this validator must be updated together with it.
+
+7. Security risks and mitigations
+---------------------------------
+- Bot token is only placed in the request URL; API/transport errors and logs redact it.
+  Tests assert the token never appears in logs or persisted failure reasons.
+- All outbound content is HTML-escaped; only <b> tags are emitted; untrusted HTML is
+  reduced to text locally. Untrusted long titles are escaped and chunked per rune so
+  entities are never split.
+- Invoice URL buttons require https, exact host my.rfchost.com, exact path
+  /viewinvoice.php, a single numeric id, no extra query parameters, no userinfo,
+  no non-443 port and no fragment.
+- Authorization requires both whitelisted user ID and configured chat ID; empty
+  whitelist/chat denies everyone. Unknown callback actions have no effect.
+- Onboarding links contain a one-time bearer token by design and are sent only to the
+  authorized chat; they are never logged.
+- No credentials, live accounts, or real secrets are present in code or tests.

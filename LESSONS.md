@@ -207,3 +207,9 @@
 - 修复 commit：本分支 T07 补充修复提交（SHA 见 result.txt）。
 - Done right: clone invoice 后用 payload.EmailID 覆盖 SourceEmailID 再生成 keyboard，不修改持久账单；测试 duplicate invoice different email 断言按钮指向第二封且能取到第二封全文。
 - Seen 1× (2026-11-15).
+
+**依赖前置命令必须成功后才向 Worker 发送完成信号。**
+- 主线集成 T08（85c0c52 之后）：rebase 因 LESSONS.md 追加冲突暂停，串行 shell 的下一条 hc send 仍发出了阶段B信号；在 Worker 改代码前中断并纠正。
+- 修复 commit：待集成报告提交；Codex 保留双方教训解决冲突、实际完成 rebase 后才重新派工。
+- Done right: 使用 check=True 或 && 连接有前置依赖的操作，并检查 rebase 状态再发送通知。
+- Seen 1× (2026-11-15).
