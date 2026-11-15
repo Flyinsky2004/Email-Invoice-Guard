@@ -4,10 +4,10 @@
 
 ## 一键安装
 
-在 GitHub 已发布 Release 且 Actions 完成后：
+安装脚本常驻仓库，二进制来自最新稳定 Release。修改脚本不需要重新发版或重新构建：
 
 ```bash
-curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/Email-Invoice-Guard/main/scripts/install.sh | sudo bash
 ```
 
 安装器询问 Bot Token、信任用户 ID、监听端口（默认 8080，被占用时会提示更换）和可选 HTTPS 地址。默认将通知发到第一个信任用户的私聊；先向 Bot 发送 `/start`。
@@ -15,13 +15,30 @@ curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/d
 参数示例：
 
 ```bash
-curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/download/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/Email-Invoice-Guard/main/scripts/install.sh -o install.sh
 sudo bash install.sh --public-url https://invoice.example.com --chat-id -1001234567890
 sudo bash install.sh --port 9090
 sudo bash install.sh --version v1.0.0
 ```
 
 完整选项：`bash install.sh --help`。发布、校验与无人值守安装见 [releases.md](releases.md)。
+
+## 更新
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/Email-Invoice-Guard/main/scripts/update.sh | sudo bash
+```
+
+`update.sh` 从仓库 `main` 获取最新安装脚本，再用最新稳定 Release 更新程序，保留配置、数据库与加密密钥。其余参数原样传给 `install.sh`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/Email-Invoice-Guard/main/scripts/update.sh -o update.sh
+sudo bash update.sh --version v1.0.0
+sudo bash update.sh --port 9090
+bash update.sh --help
+```
+
+自定义安装目录或服务名称时，升级需传入相同参数（`--install-dir`、`--config-dir`、`--data-dir`、`--service-name`）。
 
 ## 文件与服务
 
@@ -70,6 +87,6 @@ Microsoft 接入另需配置应用 Client ID、Client Secret 与同源回调 `/o
 
 ## 升级与移除
 
-升级前备份数据库和原密钥，再重复运行安装脚本。配置与密钥不会因普通升级重新生成。若指定过自定义目录/服务名，升级时传入相同参数。
+升级前备份数据库和原密钥，运行 `update.sh`（或再次运行 `install.sh`）。配置与密钥不会因普通升级重新生成。若指定过自定义目录/服务名，升级时传入相同参数。
 
 停用只需 `systemctl disable --now email-invoice-guard`。数据库与密钥由管理员单独保存；安装器不提供自动删数据的卸载操作。

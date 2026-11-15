@@ -261,3 +261,9 @@
 - 修复 commit：本次安装器修复提交（交互询问端口、`--port`、启动前 `ss` 检测、失败时输出 journal 最近日志）。
 - Done right: 首次安装询问端口（默认 8080），升级保留原端口；启动前用 `ss -H -ltn "sport = :PORT"` 检测，占用则重新询问或明确报错；健康检查失败时打印 `journalctl -u <service> -n 30`，不再只提示自行查看日志。
 - Seen 1× (2026-11-15).
+
+**安装/更新脚本必须常驻仓库并可直接获取，不能只作为 Release 资产。**
+- 0.0.1 交付把 `install.sh` 作为 Release 资产上传，导致修一个安装脚本也要重新构建、发版，用户明确反对。
+- 修复 commit：本次脚本交付调整（`scripts/update.sh` 入库，文档改用 raw.githubusercontent.com 的 main 地址，Release 只上传二进制与校验和）。
+- Done right: 脚本从仓库 `main` 获取；`update.sh` 负责取最新 `install.sh` 并执行升级；Release 工作流只发布二进制、`SHA256SUMS` 与压缩包，脚本修复无需发版。
+- Seen 1× (2026-11-15).

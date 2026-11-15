@@ -52,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           test -z "$(gofmt -l cmd internal tests)"
-          bash -n scripts/install.sh
+          bash -n scripts/install.sh scripts/update.sh
           go mod verify
           go vet ./...
           go test -race -count=1 ./...
@@ -88,7 +88,7 @@ jobs:
           go build -trimpath -buildvcs=false \
             -ldflags="-s -w -X main.version=$VERSION -X main.commit=$commit -X main.buildTime=$built_at" \
             -o dist/package/email-invoice-guard ./cmd/server
-          cp README.md .env.example scripts/install.sh deployments/email-invoice-guard.service dist/package/
+          cp README.md .env.example scripts/install.sh scripts/update.sh deployments/email-invoice-guard.service dist/package/
           mkdir -p dist/package/docs
           cp -R docs/setup docs/operations dist/package/docs/
           tar -C dist/package -czf "dist/email-invoice-guard_${VERSION}_linux_${GOARCH}.tar.gz" .
@@ -114,7 +114,7 @@ jobs:
           pattern: linux-*
           merge-multiple: true
           path: dist
-      - name: Attach binaries, checksums and installer to the existing release
+      - name: Attach binaries and checksums to the existing release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -126,5 +126,3 @@ jobs:
           sha256sum email-invoice-guard_*.tar.gz > SHA256SUMS
           gh release view "$RELEASE_TAG" >/dev/null
           gh release upload "$RELEASE_TAG" email-invoice-guard_*.tar.gz SHA256SUMS --clobber
-          # Publish the entry point after all binary assets are available.
-          gh release upload "$RELEASE_TAG" ../scripts/install.sh --clobber

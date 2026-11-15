@@ -40,10 +40,10 @@ Microsoft Graph / QQ IMAP
 
 ## 一键安装（Linux / systemd）
 
-先将代码推送到 [GitHub 仓库](https://github.com/Flyinsky2004/Email-Invoice-Guard)，发布一个 Release，并等待 Actions 构建完成。然后在 VPS 执行：
+安装与更新脚本常驻仓库，二进制来自最新稳定 Release。修改脚本不需要重新发版或重新构建：
 
 ```bash
-curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/Email-Invoice-Guard/main/scripts/install.sh | sudo bash
 ```
 
 安装时隐藏询问 **Bot Token**，询问 **信任用户 ID**（逗号分隔）、**监听端口**（默认 8080，被占用时会提示更换），并可选填写公网 HTTPS 地址。默认 Chat ID 是第一个信任用户；先与机器人私聊发送 `/start`。
@@ -51,13 +51,28 @@ curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/d
 支持参数：
 
 ```bash
-curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/download/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/Email-Invoice-Guard/main/scripts/install.sh -o install.sh
 sudo bash install.sh --public-url https://invoice.example.com --chat-id -1001234567890
 sudo bash install.sh --version v1.0.0
 bash install.sh --help
 ```
 
-默认下载最新稳定 Release，自动识别 amd64 / arm64、校验 SHA-256、安装 systemd 服务并设置开机启动。再次执行即升级，保留配置、SQLite 数据和原加密密钥。VPS 不需要 Go 或容器运行环境。
+默认下载最新稳定 Release，自动识别 amd64 / arm64、校验 SHA-256、安装 systemd 服务并设置开机启动。VPS 不需要 Go 或容器运行环境。
+
+## 更新（Linux / systemd）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/Email-Invoice-Guard/main/scripts/update.sh | sudo bash
+```
+
+`update.sh` 从仓库 `main` 获取最新安装脚本，再用最新稳定 Release 更新程序；保留配置、SQLite 数据和原加密密钥。指定版本或端口等参数会原样传给 `install.sh`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/Email-Invoice-Guard/main/scripts/update.sh -o update.sh
+sudo bash update.sh --version v1.0.0
+sudo bash update.sh --port 9090
+bash update.sh --help
+```
 
 完整安装与 HTTPS 配置见 [部署指南](docs/operations/deployment.md)，发布流程与全部参数见 [Release 指南](docs/operations/releases.md)。
 
@@ -207,7 +222,7 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 
 ## Release 自动构建
 
-发布 Release（`release.published`）后，GitHub Actions 先执行测试，再构建 Linux amd64/arm64 二进制，上传压缩包、`SHA256SUMS` 与 `install.sh`。不使用 Docker。
+发布 Release（`release.published`）后，GitHub Actions 先执行测试，再构建 Linux amd64/arm64 二进制，上传压缩包与 `SHA256SUMS`。安装/更新脚本常驻仓库，不随 Release 发布。不使用 Docker。
 
 ## 项目结构
 

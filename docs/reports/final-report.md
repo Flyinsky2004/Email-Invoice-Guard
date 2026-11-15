@@ -6,8 +6,9 @@
 
 按用户后续要求，交付方式改为 GitHub Release + 原生 systemd，移除 Docker 构建/Compose 文件。新增：
 
-- `.github/workflows/release.yml`：发布 Release 后测试、构建 Linux amd64/arm64、上传压缩包、SHA256SUMS、install.sh。
-- `scripts/install.sh`：交互隐藏 Token、信任用户 ID、可选参数、最新稳定版下载、校验、独立服务用户、systemd、升级保留配置/密钥/数据库及失败文件恢复。
+- `.github/workflows/release.yml`：发布 Release 后测试、构建 Linux amd64/arm64、上传压缩包与 SHA256SUMS；安装/更新脚本常驻仓库，不随 Release 发布。
+- `scripts/install.sh`：交互隐藏 Token、信任用户 ID、监听端口、可选参数、最新稳定版下载、校验、独立服务用户、systemd、升级保留配置/密钥/数据库及失败文件恢复。
+- `scripts/update.sh`：从仓库 main 获取最新 install.sh 并执行升级，脚本修复无需重新发版或构建。
 - `deployments/email-invoice-guard.service` 与原生 HTTPS 反代示例。
 - `--version` 输出包含 tag、commit、build time；部署/发布/备份文档更新。
 
