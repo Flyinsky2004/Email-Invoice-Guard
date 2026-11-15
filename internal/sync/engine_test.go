@@ -313,6 +313,10 @@ func TestValidInvoiceEnhancedDelivery(t *testing.T) {
 	if store.invoiceCount() != 1 {
 		t.Fatalf("invoices = %d", store.invoiceCount())
 	}
+	invoice, ok := store.invoiceByNumber("INV-1")
+	if !ok || invoice.Status != core.PendingConfirmation {
+		t.Fatalf("validated invoice status = %+v", invoice)
+	}
 	email, _ := store.emailByProviderID("m-1")
 	delivery, ok := store.deliveryForEmail(email.InternalEmailID)
 	if !ok || delivery.Payload.Kind != deliveryKindInvoice || delivery.Payload.InvoiceID == "" {
@@ -707,4 +711,40 @@ func TestLockWaitDeadline(t *testing.T) {
 	}
 	close(release)
 	<-done
+}
+
+func TestReviewInvoiceSkipsAssetLinker(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	source := singlePageSource(testEmail("m-1", testNow, "invoice", "body"))
+	parser := &fakeParser{fn: func(ctx context.Context, email core.NormalizedEmail) (*core.Invoice, error) {
+		return &core.Invoice{
+			ProviderID: "rfchost",
+			Number:     "INV-1",
+			DueDate:    "2026-11-20",
+			AmountDue:  core.Money{Minor: 684, Currency: "USD"},
+		}, core.ErrReviewRequired
+	}}
+	linker := &fakeLinker{}
+	engine := newTestEngine(t, store, source, parser, linker)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	invoice, ok := store.invoiceByNumber("INV-1")
+	if !ok || invoice.Status != core.ReviewRequired {
+		t.Fatalf("invoice status = %+v", invoice)
+	}
+	if linker.calls != 0 {
+		t.Fatalf("review invoice updated assets: linker calls = %d", linker.calls)
+	}
+
+	email, _ := store.emailByProviderID("m-1")
+	if invoice.SourceEmailID != email.InternalEmailID {
+		t.Fatalf("review invoice lost source email: %q vs %q", invoice.SourceEmailID, email.InternalEmailID)
+	}
+	delivery, ok := store.deliveryForEmail(email.InternalEmailID)
+	if !ok || delivery.Payload.Kind != deliveryKindInvoice || delivery.Payload.InvoiceID != invoice.ID {
+		t.Fatalf("review invoice notification = %+v", delivery.Payload)
+	}
 }

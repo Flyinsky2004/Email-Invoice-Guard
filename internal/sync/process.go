@@ -149,7 +149,11 @@ func (e *Engine) processPage(ctx context.Context, account core.MailAccount, fold
 				// the new mail, but its business/payment state is untouched.
 				kind = deliveryKindInvoice
 				invoiceID = savedInvoice.ID
-				if invoiceCreated && e.linker != nil {
+				// Only a newly created, sufficiently validated invoice may
+				// update asset last-invoice/service-period state. Review
+				// invoices still notify and keep their source email, but must
+				// never mutate assets automatically.
+				if invoiceCreated && savedInvoice.Status == core.PendingConfirmation && e.linker != nil {
 					if err := e.linker.Reconcile(ctx, tx, savedInvoice); err != nil {
 						return storageError()
 					}
