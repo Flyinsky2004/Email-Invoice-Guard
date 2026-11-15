@@ -202,6 +202,7 @@ func (s *Source) fetchEmail(ctx context.Context, client *imapclient.Client, acco
 
 	headers := parseHeaders(buffer.FindBodySection(headerSection))
 	var textBody, htmlBody strings.Builder
+	decodeReasons := map[string]struct{}{}
 	for _, text := range texts {
 		raw := buffer.FindBodySection(text.section)
 		if len(raw) == 0 {
@@ -210,10 +211,18 @@ func (s *Source) fetchEmail(ctx context.Context, client *imapclient.Client, acco
 		if text.mime != nil {
 			// BODY[<part>] carries only the part body; BODY[<part>.MIME]
 			// carries the Content-Type/Content-Transfer-Encoding headers that
-			// the decoder needs. Prepend them before decoding.
-			raw = joinMIMEPart(buffer.FindBodySection(text.mime), raw)
+			// the decoder needs. If the server omits them, synthesize the
+			// headers from BODYSTRUCTURE rather than guessing from content.
+			mime := buffer.FindBodySection(text.mime)
+			if len(mime) == 0 {
+				mime = synthesizeMIMEPart(text.mediaType, text.charset, text.encoding)
+			}
+			raw = joinMIMEPart(mime, raw)
 		}
-		decoded := decodeText(raw)
+		decoded, reason := decodeText(raw)
+		if reason != "" {
+			decodeReasons[reason] = struct{}{}
+		}
 		if decoded == "" {
 			continue
 		}
@@ -227,6 +236,22 @@ func (s *Source) fetchEmail(ctx context.Context, client *imapclient.Client, acco
 				textBody.WriteString("\n")
 			}
 			textBody.WriteString(decoded)
+		}
+	}
+	if len(decodeReasons) > 0 {
+		if headers == nil {
+			headers = map[string][]string{}
+		}
+		reasons := make([]string, 0, len(decodeReasons))
+		for reason := range decodeReasons {
+			reasons = append(reasons, reason)
+		}
+		sort.Strings(reasons)
+		joined := strings.Join(reasons, ",")
+		headers[decodeErrorHeader] = []string{joined}
+		if s.logger != nil {
+			s.logger.Warn("imap text decode fallback", "account_id", account.ID,
+				"folder_id", folder.ID, "uid", uint32(meta.uid), "reason", joined)
 		}
 	}
 

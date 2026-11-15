@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -500,16 +501,177 @@ func TestBoundedUIDRange(t *testing.T) {
 	}
 }
 
-func TestJoinMIMEPartDoesNotDuplicateHeaders(t *testing.T) {
+func TestJoinMIMEPartAlwaysPrependsHeaders(t *testing.T) {
 	mime := []byte("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n")
-	bodyWithHeaders := []byte("Content-Type: text/plain; charset=utf-8\r\n\r\nhello")
-	joined := joinMIMEPart(mime, bodyWithHeaders)
-	if string(joined) != string(bodyWithHeaders) {
-		t.Fatalf("joinMIMEPart duplicated headers: %q", joined)
+	// A body may legitimately begin with a Content-Type line; it must never be
+	// mistaken for the part's MIME headers.
+	body := []byte("Content-Type: this is body text, not a header\r\n\r\nhello")
+	joined := joinMIMEPart(mime, body)
+	if !strings.HasPrefix(string(joined), string(mime)) {
+		t.Fatalf("joinMIMEPart did not prepend MIME headers: %q", joined)
 	}
-	joined = joinMIMEPart(mime, []byte("aGVsbG8="))
-	if !strings.HasSuffix(string(joined), "\r\n\r\naGVsbG8=") {
-		t.Fatalf("joinMIMEPart did not terminate headers: %q", joined)
+	if !strings.HasSuffix(string(joined), string(body)) {
+		t.Fatalf("joinMIMEPart lost body content: %q", joined)
+	}
+	if string(joinMIMEPart(nil, body)) != string(body) {
+		t.Fatal("joinMIMEPart changed the body when no MIME headers exist")
+	}
+}
+
+type partSpec struct {
+	media    string
+	subtype  string
+	encoding string
+	charset  string
+	body     string
+	mime     []byte // nil omits BODY[<part>.MIME] from the fake server
+}
+
+func multipartPartsMessage(uid imapv2.UID, subject, messageID string, date time.Time, parts ...partSpec) imaptest.Message {
+	children := make([]imapv2.BodyStructure, 0, len(parts))
+	sections := map[string][]byte{"HEADER": textHeader(subject, messageID)}
+	for i, part := range parts {
+		children = append(children, &imapv2.BodyStructureSinglePart{
+			Type: part.media, Subtype: part.subtype,
+			Params:   map[string]string{"charset": part.charset},
+			Encoding: part.encoding,
+			Size:     uint32(len(part.body)),
+			Text:     &imapv2.BodyStructureText{NumLines: 1},
+			Extended: &imapv2.BodyStructureSinglePartExt{},
+		})
+		path := fmt.Sprintf("%d", i+1)
+		sections[path] = []byte(part.body)
+		if part.mime != nil {
+			sections[path+".MIME"] = part.mime
+		}
+	}
+	return imaptest.Message{
+		UID:          uid,
+		Envelope:     textEnvelope(subject, messageID, date),
+		InternalDate: date,
+		BodyStructure: &imapv2.BodyStructureMultiPart{
+			Subtype:  "mixed",
+			Children: children,
+			Extended: &imapv2.BodyStructureMultiPartExt{},
+		},
+		Sections: sections,
+	}
+}
+
+func TestSyncCorruptedBase64PreservesRawText(t *testing.T) {
+	date := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	src, _ := syncSource(t, imaptest.Options{
+		Mailboxes: []imaptest.Mailbox{
+			inboxMailbox(1500, 2, multipartPartsMessage(1, "corrupt base64", "bad-b64@example.com", date,
+				partSpec{
+					media: "text", subtype: "plain", encoding: "7bit", charset: "utf-8",
+					body: "plain ok",
+					mime: []byte("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n"),
+				},
+				partSpec{
+					media: "text", subtype: "html", encoding: "base64", charset: "utf-8",
+					body: "!!!not-base64!!!",
+					mime: []byte("Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"),
+				},
+			)),
+		},
+	})
+	batch, err := src.Sync(context.Background(), testAccount(), testFolder(), core.SyncCursor{})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	email := batch.Emails[0]
+	if email.TextBody != "plain ok" {
+		t.Errorf("TextBody = %q", email.TextBody)
+	}
+	if !strings.Contains(email.HTMLBody, "!!!not-base64!!!") {
+		t.Fatalf("corrupted base64 HTML body was lost: %q", email.HTMLBody)
+	}
+	if len(email.Headers[decodeErrorHeader]) == 0 {
+		t.Fatal("decode failure was not marked in headers")
+	}
+}
+
+func TestSyncCorruptedQuotedPrintablePreservesRawText(t *testing.T) {
+	date := time.Date(2026, 11, 15, 9, 30, 0, 0, time.UTC)
+	src, _ := syncSource(t, imaptest.Options{
+		Mailboxes: []imaptest.Mailbox{
+			inboxMailbox(1600, 2, multipartPartsMessage(1, "corrupt qp", "bad-qp@example.com", date,
+				partSpec{
+					media: "text", subtype: "plain", encoding: "quoted-printable", charset: "utf-8",
+					body: "Hello =ZZ world",
+					mime: []byte("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n"),
+				},
+			)),
+		},
+	})
+	batch, err := src.Sync(context.Background(), testAccount(), testFolder(), core.SyncCursor{})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	email := batch.Emails[0]
+	if !strings.Contains(email.TextBody, "=ZZ") {
+		t.Fatalf("corrupted quoted-printable body was lost: %q", email.TextBody)
+	}
+	// Go's quoted-printable reader is lenient and passes invalid escapes
+	// through, so the important assertion is that no content is lost.
+	if email.TextBody == "" {
+		t.Fatal("corrupted quoted-printable produced empty text")
+	}
+}
+
+func TestSyncPlainPartWithoutMIMEHeadersIsPreserved(t *testing.T) {
+	date := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	body := "Hello without MIME headers"
+	src, _ := syncSource(t, imaptest.Options{
+		Mailboxes: []imaptest.Mailbox{
+			inboxMailbox(1700, 2, multipartPartsMessage(1, "no mime", "no-mime@example.com", date,
+				partSpec{
+					media: "text", subtype: "plain", encoding: "7bit", charset: "utf-8",
+					body: body,
+					mime: nil,
+				},
+			)),
+		},
+	})
+	batch, err := src.Sync(context.Background(), testAccount(), testFolder(), core.SyncCursor{})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	email := batch.Emails[0]
+	if email.TextBody != body {
+		t.Fatalf("TextBody = %q, want %q", email.TextBody, body)
+	}
+	if len(email.Headers[decodeErrorHeader]) != 0 {
+		t.Fatalf("synthesized MIME headers were wrongly treated as a decode failure: %v",
+			email.Headers[decodeErrorHeader])
+	}
+}
+
+func TestSyncBodyStartingWithContentTypeIsNotHeaders(t *testing.T) {
+	date := time.Date(2026, 11, 15, 10, 30, 0, 0, time.UTC)
+	body := "Content-Type: this is body text, not a header\r\n\r\nhello"
+	src, _ := syncSource(t, imaptest.Options{
+		Mailboxes: []imaptest.Mailbox{
+			inboxMailbox(1800, 2, multipartPartsMessage(1, "body header", "body-header@example.com", date,
+				partSpec{
+					media: "text", subtype: "plain", encoding: "7bit", charset: "utf-8",
+					body: body,
+					mime: []byte("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n"),
+				},
+			)),
+		},
+	})
+	batch, err := src.Sync(context.Background(), testAccount(), testFolder(), core.SyncCursor{})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	email := batch.Emails[0]
+	if email.TextBody != body {
+		t.Fatalf("TextBody = %q, want body content %q", email.TextBody, body)
+	}
+	if len(email.Headers[decodeErrorHeader]) != 0 {
+		t.Fatal("body content beginning with Content-Type was mistaken for headers")
 	}
 }
 

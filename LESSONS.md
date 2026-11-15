@@ -129,3 +129,9 @@
 - 修复 commit：待定位（本次 T02 提交）。
 - Done right: 持久化事务内 ListAccounts 查找同 provider+address，owner 不符返回 ErrUnauthorized，复用 ID 更新凭证并保留历史；测试覆盖同 owner 复用、异 owner 拒绝与事务回滚。
 - Seen 1× (2026-11-15).
+
+**文本解码失败不得返回空字符串；必须保留原始/部分解码内容并标记，否则游标提交会永久丢正文。**
+- T02 验收退修：decodeText 在 message.Read/io.ReadAll 错误时返回 ""，fetchEmail 继续并提交游标，永久丢失该文本部件；joinMIMEPart 以正文开头猜测自带头也会误判正文。
+- 修复 commit：待定位（本次退修提交）。
+- Done right: 解码失败返回原始编码文本（io.ReadAll 有 partial 时保留 partial+raw），写入 X-Invoice-Guard-Decode-Error 标记并 Warn 日志；MIME 头缺失时由 BODYSTRUCTURE 合成；joinMIMEPart 无条件拼接；损坏 base64/QP、无 MIME 头、正文以 Content-Type 开头均有测试。
+- Seen 1× (2026-11-15).

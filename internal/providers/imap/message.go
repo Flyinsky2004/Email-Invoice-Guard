@@ -24,6 +24,8 @@ type textSection struct {
 	section   *imapv2.FetchItemBodySection
 	mime      *imapv2.FetchItemBodySection
 	mediaType string
+	charset   string
+	encoding  string
 }
 
 type attachmentPlan struct {
@@ -52,6 +54,8 @@ func planMessage(structure imapv2.BodyStructure) ([]textSection, []attachmentPla
 			texts = append(texts, textSection{
 				section:   &imapv2.FetchItemBodySection{Peek: true},
 				mediaType: media,
+				charset:   root.Params["charset"],
+				encoding:  root.Encoding,
 			})
 		} else {
 			attachments = append(attachments, attachmentPlan{
@@ -76,6 +80,8 @@ func planMessage(structure imapv2.BodyStructure) ([]textSection, []attachmentPla
 					section:   &imapv2.FetchItemBodySection{Part: pathCopy, Peek: true},
 					mime:      &imapv2.FetchItemBodySection{Part: append([]int(nil), path...), Specifier: imapv2.PartSpecifierMIME, Peek: true},
 					mediaType: media,
+					charset:   single.Params["charset"],
+					encoding:  single.Encoding,
 				})
 				return true
 			}
@@ -106,25 +112,44 @@ func isAttachmentPart(part *imapv2.BodyStructureSinglePart) bool {
 	return part.Filename() != ""
 }
 
+// decodeErrorHeader marks a text part whose MIME decoding failed. The body is
+// still preserved via a safe raw fallback; the marker is a bounded diagnostic,
+// never message content.
+const decodeErrorHeader = "X-Invoice-Guard-Decode-Error"
+
 // decodeText decodes transfer encoding and charset to UTF-8. Text parts are
-// read in full: silently truncating a body would lose invoice content. Unknown
-// charsets degrade to the raw decoded bytes rather than failing the whole sync.
-func decodeText(raw []byte) string {
+// read in full: silently truncating or emptying a body would lose invoice
+// content. On a decode/read failure it returns the original encoded text (and
+// any partial decoded bytes) together with a bounded reason. Unknown charsets
+// degrade to the raw decoded bytes rather than failing the whole sync.
+func decodeText(raw []byte) (string, string) {
 	if len(raw) == 0 {
-		return ""
+		return "", ""
 	}
 	entity, err := message.Read(bytes.NewReader(raw))
 	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
-		return ""
+		return string(raw), "mime-decode-failed"
 	}
 	if entity == nil {
-		return ""
+		return string(raw), "mime-decode-failed"
 	}
-	body, err := io.ReadAll(entity.Body)
-	if err != nil {
-		return ""
+	body, readErr := io.ReadAll(entity.Body)
+	if readErr != nil {
+		decoded := string(body)
+		if decoded == "" {
+			return string(raw), "mime-read-failed"
+		}
+		// Preserve both the partial decoded prefix and the remaining raw
+		// encoded text; never drop content on a read error.
+		return decoded + "\n" + string(raw), "mime-read-failed"
 	}
-	return string(body)
+	if len(body) == 0 && len(raw) > 0 &&
+		!bytes.Contains(raw, []byte("\r\n\r\n")) && !bytes.Contains(raw, []byte("\n\n")) {
+		// The entire input was consumed as headers with no separator, which
+		// means it was a headerless body. Preserve it instead of returning "".
+		return string(raw), "mime-decode-empty"
+	}
+	return string(body), ""
 }
 
 // joinMIMEPart prepends a part's MIME headers to its body so the go-message
@@ -133,10 +158,9 @@ func joinMIMEPart(mime, body []byte) []byte {
 	if len(mime) == 0 {
 		return body
 	}
-	if looksLikeHeaders(body) {
-		// Some servers include the part's MIME headers in BODY[<part>].
-		return body
-	}
+	// BODY[<part>] carries only the part body; BODY[<part>.MIME] carries the
+	// headers. Always prepend them: a text body may legitimately begin with a
+	// "Content-Type:" line, so body content is never used to infer headers.
 	combined := make([]byte, 0, len(mime)+4+len(body))
 	combined = append(combined, mime...)
 	switch {
@@ -153,15 +177,25 @@ func joinMIMEPart(mime, body []byte) []byte {
 	return combined
 }
 
-func looksLikeHeaders(body []byte) bool {
-	head := body
-	if len(head) > 512 {
-		head = head[:512]
+// synthesizeMIMEPart builds minimal MIME headers from BODYSTRUCTURE metadata
+// when the server does not return BODY[<part>.MIME]. This keeps charset and
+// transfer encoding available to the decoder instead of guessing from content.
+func synthesizeMIMEPart(mediaType, charset, encoding string) []byte {
+	var builder strings.Builder
+	builder.WriteString("Content-Type: ")
+	builder.WriteString(mediaType)
+	if charset != "" {
+		builder.WriteString("; charset=")
+		builder.WriteString(charset)
 	}
-	lower := strings.ToLower(string(head))
-	return strings.HasPrefix(lower, "content-type:") ||
-		strings.HasPrefix(lower, "content-transfer-encoding:") ||
-		strings.HasPrefix(lower, "mime-version:")
+	builder.WriteString("\r\n")
+	if encoding == "" {
+		encoding = "7bit"
+	}
+	builder.WriteString("Content-Transfer-Encoding: ")
+	builder.WriteString(encoding)
+	builder.WriteString("\r\n\r\n")
+	return []byte(builder.String())
 }
 
 func parseHeaders(raw []byte) map[string][]string {
