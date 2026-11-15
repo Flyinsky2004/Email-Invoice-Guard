@@ -315,3 +315,9 @@
 - 修复 commit：本次 orchestrator 修复提交（manualDeliveryFresh 在每片发送前重读 plan 与 payload 中的 occurrence）。
 - Done right: TestManualSummaryRechecksBeforeSend / TestManualSummarySkipsWhenPlanPausedBeforeSend 断言 sendMessage 为 0 且 delivery 被 SKIPPED。
 - Seen 1× (2026-11-15).
+
+**Go 的 time.Parse("15:04") 接受单数字小时，不能用它严格校验 HH:MM。**
+- T13 初版测试（本次提交前）断言 MANUAL_DEFAULT_TIME="9:00" 应失败，实际 time.Parse 接受 1 位小时，TestLoadConfigRejectsBadManual/time 失败；若依赖它校验会接受非规范格式。
+- 修复 commit: 本次 T13 实现提交（SHA 见 result.txt）；沿用既有 REMINDER_TIME 的宽松语义，测试改用真正非法值 "9am" 与 "24:00"。
+- Done right: 明确要求严格 HH:MM 时用正则或自定义解析；仅需合法性时与既有 REMINDER_TIME 保持一致，并用真正非法值做回归测试。
+- Seen 1× (2026-11-15).

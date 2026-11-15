@@ -17,6 +17,7 @@
 | 增强通知 | 一条逻辑通知包含明细、金额、到期日、主机与可信链接，超长时安全分片 |
 | 人工确认 | 两段式确认「已支付」，支持撤销与取消 |
 | 到期提醒 | 按本地日历日每天提醒一次，创建当天与待复核账单不提醒 |
+| 手动周期提醒 | 无需邮件即可登记周期性账单，按计划时区每日汇总提醒，人工确认支付 |
 | 资产关联 | 按明确的商家/账号/主机或产品标识关联 VPS 资产，不猜测 |
 | 安全接入 | 一次性 HTTPS 链接提交 QQ 授权码，Microsoft OAuth + PKCE |
 | 可靠投递 | 持久化 outbox、租约、失败重试、分片消息 ID 记录 |
@@ -138,6 +139,14 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 | `TELEGRAM_RATE_INTERVAL` | `1s` | 发送节流间隔 |
 | `TRUSTED_PROXY_CIDRS` | 空 | 允许声明 `X-Forwarded-Proto: https` 的反代网段 |
 | `QQ_ALLOWED_DOMAINS` | `qq.com,foxmail.com` | 允许接入的 QQ 别名域名（裸域名，逗号分隔） |
+| `MANUAL_DEFAULT_TIME` | `09:00` | 手动周期提醒的默认提醒时间（24 小时制） |
+| `MANUAL_DEFAULT_TIMEZONE` | `Asia/Taipei` | 手动计划未指定时区时使用的 IANA 时区 |
+| `MANUAL_DAILY_RETRY` | `true` | 每日汇总投递失败后是否重试 |
+| `MANUAL_DAILY_INTERVAL` | `24h` | 每日汇总重试间隔 |
+| `MANUAL_MONTH_END_POLICY` | `last_day` | 月内无对应日时取当月最后一天；v1 仅支持 `last_day` |
+| `MANUAL_SCHEDULER_INTERVAL` | `30s` | 手动提醒调度轮询间隔 |
+| `MANUAL_WIZARD_TTL` | `10m` | `/reminder_add` 向导的有效期 |
+| `MANUAL_MAX_CATCHUP_MONTHS` | `24` | 追赶窗口；超出后跳到下一个账单日，不补发历史 |
 | `ALLOW_INSECURE_HTTP` | `false` | 仅本地开发：允许回环地址使用 http |
 
 ### Microsoft（可选）
@@ -176,6 +185,10 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 | `/providers` | 已启用服务商/解析器 |
 | `/status` | 系统状态 |
 | `/settings` | 时区、提醒时间、同步间隔、文件夹开关 |
+| `/reminder_add` | 向导式创建手动周期提醒 |
+| `/reminders`、`/reminder <id>` | 列出/查看手动计划 |
+| `/reminder_edit <id>`、`/reminder_pause <id>`、`/reminder_resume <id>`、`/reminder_delete <id>` | 编辑、暂停、恢复、取消计划 |
+| `/reminder_pending`、`/reminder_paid <occurrenceID>`、`/reminder_history <id>` | 待确认周期、确认支付、事件历史 |
 
 文件夹管理：`/settings folder <accountID>` 列出文件夹名称/ID/启用状态，
 再用 `/settings folder <accountID> <folderID> on|off` 切换。接入后新建的文件夹
@@ -196,6 +209,21 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 - 账单消息中的「已支付」按钮进入二次确认，确认后才写入 `PAID_CONFIRMED`。
 - 已确认账单可撤销回 `PENDING_CONFIRMATION`。
 - 商家识别只是描述性信息，不代表账单真实性；程序不会自动付款。
+
+## 手动周期提醒
+
+手动周期提醒用于没有账单邮件的固定支出（VPS 续费、域名、订阅等）。计划完全由用户声明，**不读取邮件**；邮件、同步或解析结果都不会把计划或周期标记为已支付。
+
+- **创建**：`/reminder_add` 进入向导，依次填写标题、周期（v1 仅月度）、商家、金额、账期日、资产（可选）、提醒时间、时区、支付链接与备注，最后确认保存。`/reminder_edit <id>` 用同一向导修改。
+- **每日汇总**：每个计划在每个计划本地日历日最多发送一条汇总消息，覆盖当天所有待确认周期；同一计划同一天重复 Tick 或重启都不会重复发送。
+- **账期日与月末**：账期日 1–31；当月没有该日时按 `last_day` 策略取当月最后一天（例如 31 日计划在 4 月为 30 日）。
+- **时区**：每个计划保存自己的 IANA 时区，是否到达提醒时间按计划本地时间判断，不受服务器时区影响。
+- **确认语义**：待确认周期必须由授权用户显式确认；按钮「已支付」只展示二次确认，再点「确认」才写入 `PAID_CONFIRMED`。可撤销回待确认，也可取消计划。
+- **暂停/恢复**：暂停只停止新周期与汇总，已有待确认周期仍可确认；恢复从下一个账单日开始，不补发漏掉的周期。
+- **追赶窗口**：若计划落后超过 `MANUAL_MAX_CATCHUP_MONTHS`，调度跳到下一个账单日，不重放历史周期。
+- **重启安全**：计划、周期、汇总与 outbox 全部持久化，唯一键保证重启或重复 Tick 不产生重复记录。
+
+手动提醒默认启用；如需关闭，只能通过代码组合使用不含手动服务的 `telegram.New`（冻结契约中的显式禁用方式）。
 
 ## 备份与恢复
 

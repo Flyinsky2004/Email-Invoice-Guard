@@ -57,6 +57,16 @@
 | `/providers` | 已启用的解析器/服务商 |
 | `/status` | 系统状态（账号、邮件、待办数量） |
 | `/settings` | 查看/修改时区、提醒时间、同步间隔、文件夹开关 |
+| `/reminder_add` | 向导式创建手动周期提醒 |
+| `/reminders` | 手动计划列表 |
+| `/reminder <id>` | 查看单个计划及其待确认周期 |
+| `/reminder_edit <id>` | 向导式修改计划 |
+| `/reminder_pause <id>` | 暂停计划（不产生新周期与汇总） |
+| `/reminder_resume <id>` | 恢复计划（从下一个账单日开始） |
+| `/reminder_delete <id>` | 取消计划并跳过排队的汇总 |
+| `/reminder_paid <occurrenceID>` | 确认某个周期已支付 |
+| `/reminder_pending` | 列出全部待确认周期 |
+| `/reminder_history <id>` | 计划的审计事件历史 |
 
 ### 动态设置
 
@@ -86,21 +96,63 @@
 设置写入数据库后立即生效：提醒调度在每次 Tick 读取时区与提醒时间，同步循环在
 每轮之间读取同步间隔，文件夹开关在下一轮目录刷新后生效。
 
-## 5. 账单交互
+## 5. 手动周期提醒
+
+手动周期提醒不依赖邮件，适合 VPS 续费、域名、订阅等固定支出。
+
+### 创建与编辑
+
+- `/reminder_add` 启动向导：标题 → 周期（v1 仅月度）→ 商家 → 金额/币种 → 账期日（1–31）→ 资产（可选，可跳过）→ 提醒时间（`HH:MM`）→ 时区 → 支付链接（可选）→ 备注（可选）→ 确认。
+- 向导状态保存在内存中，超过 `MANUAL_WIZARD_TTL` 自动失效；发送 `/cancel` 可随时取消。
+- `/reminder_edit <id>` 用同一向导修改现有计划；修改账期日、提醒时间或时区会重算下一个账单日，并跳过已有周期的日期。
+
+### 每日汇总与确认
+
+- 每个计划在每个**计划本地日历日**最多发送一条汇总，列出当天所有待确认周期；同一计划同一天重复调度或重启不会重复发送。
+- 账期日超过当月天数时按 `last_day` 取当月最后一天。
+- 汇总消息与 `/reminder <id>` 中的「Mark paid」按钮只显示二次确认；点「Confirm paid」后才写入 `PAID_CONFIRMED`。已确认周期可「Undo」回到待确认。
+- 只有授权用户（`TELEGRAM_ALLOWED_USER_IDS`）且会话等于 `TELEGRAM_CHAT_ID` 时确认才生效；其他用户点击会被拒绝。
+- **邮件永远不会把手动计划或周期标记为已支付**，支付状态只能由用户确认改变。
+
+### 回调行为
+
+| 回调 | 行为 |
+|---|---|
+| `Mark paid` | 只展示确认提示（Confirm / Cancel），不改状态 |
+| `Confirm paid` | 调用确认，写入 `PAID_CONFIRMED` 与 `PAYMENT_CONFIRMED` 事件，并刷新消息 |
+| `Undo` | 撤销确认，回到 `PENDING_CONFIRMATION` |
+| `View plan` / `History` | 打开计划详情或事件历史 |
+
+### 配置变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `MANUAL_DEFAULT_TIME` | `09:00` | 计划未填写时的默认提醒时间 |
+| `MANUAL_DEFAULT_TIMEZONE` | `Asia/Taipei` | 计划未填写时的默认时区 |
+| `MANUAL_DAILY_RETRY` | `true` | 汇总投递失败后是否重试 |
+| `MANUAL_DAILY_INTERVAL` | `24h` | 汇总重试间隔 |
+| `MANUAL_MONTH_END_POLICY` | `last_day` | v1 仅支持 `last_day` |
+| `MANUAL_SCHEDULER_INTERVAL` | `30s` | 调度轮询间隔 |
+| `MANUAL_WIZARD_TTL` | `10m` | 向导有效期 |
+| `MANUAL_MAX_CATCHUP_MONTHS` | `24` | 追赶窗口；超出后跳到下一个账单日 |
+
+手动提醒默认启用；关闭需要以不含手动服务的方式组合机器人（冻结契约中的显式禁用方式），没有运行时开关。
+
+## 6. 账单交互
 
 - 账单以**一条增强消息**投递，包含明细、金额、到期日、主机与可信的商家链接。
 - 点击「已支付」只是进入**二次确认**；再次确认后才写入 `PAID_CONFIRMED`。
 - 已确认账单可「撤销」，回到 `PENDING_CONFIRMATION`。
 - 提醒：到期前按本地日历日每天提醒一次；账单创建当天不提醒；`REVIEW_REQUIRED` 不提醒。
 
-## 6. 投递语义与限制
+## 7. 投递语义与限制
 
 - 出站消息持久化在 outbox，失败会按退避重试。
 - 网络超时导致结果不明时标记为 `UNKNOWN` 并重试，属于**至少一次**投递；极端情况下可能重复一条消息。
 - 每个分片单独记录 Telegram 消息 ID，重试时跳过已成功的分片。
 - 已发送的外部消息无法与本地支付状态原子回滚，这是实际存在的限制。
 
-## 7. 常见问题
+## 8. 常见问题
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
