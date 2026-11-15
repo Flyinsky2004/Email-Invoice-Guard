@@ -169,7 +169,9 @@ func occurrenceID(raw string) (string, error) {
 }
 
 // CreatePlan stores an ACTIVE plan whose first due date is the first billing
-// date on or after the plan-local today. No past occurrence is created.
+// date whose reminder instant has not passed. A billing day that is today
+// counts only while the plan-local reminder time has not passed; no past
+// occurrence is created.
 func (s *Service) CreatePlan(ctx context.Context, actorID int64, in core.ManualReminderInput) (core.ManualPlan, error) {
 	if err := s.authorize(actorID); err != nil {
 		return core.ManualPlan{}, err
@@ -182,8 +184,7 @@ func (s *Service) CreatePlan(ctx context.Context, actorID int64, in core.ManualR
 		return core.ManualPlan{}, err
 	}
 	now := s.now()
-	today := core.LocalDate(now, v.loc)
-	nextDue, err := firstBillingOnOrAfter(today, v.billingDay)
+	nextDue, err := firstBillingAfter(now, v.billingDay, v.hour, v.minute, v.loc)
 	if err != nil {
 		return core.ManualPlan{}, err
 	}
@@ -243,9 +244,14 @@ func (s *Service) UpdatePlan(ctx context.Context, actorID int64, id string, in c
 	}
 	now := s.now()
 	nextDue := current.NextDueDate
-	if current.Status == core.ManualPlanActive && v.billingDay != current.BillingDay {
-		today := core.LocalDate(now, v.loc)
-		nextDue, err = firstBillingOnOrAfter(today, v.billingDay)
+	scheduleChanged := v.billingDay != current.BillingDay ||
+		v.reminderTime != current.ReminderTime || v.timezone != current.Timezone
+	if current.Status == core.ManualPlanActive && scheduleChanged {
+		nextDue, err = firstBillingAfter(now, v.billingDay, v.hour, v.minute, v.loc)
+		if err != nil {
+			return core.ManualPlan{}, err
+		}
+		nextDue, err = s.firstFreeBilling(ctx, current.ID, nextDue, v.billingDay)
 		if err != nil {
 			return core.ManualPlan{}, err
 		}
@@ -325,8 +331,15 @@ func (s *Service) ResumePlan(ctx context.Context, actorID int64, id string) (cor
 		return core.ManualPlan{}, fmt.Errorf("%w: timezone %q", core.ErrInvalid, current.Timezone)
 	}
 	now := s.now()
-	today := core.LocalDate(now, loc)
-	nextDue, err := firstBillingOnOrAfter(today, current.BillingDay)
+	_, hour, minute, err := normalizeClock(current.ReminderTime)
+	if err != nil {
+		return core.ManualPlan{}, err
+	}
+	nextDue, err := firstBillingAfter(now, current.BillingDay, hour, minute, loc)
+	if err != nil {
+		return core.ManualPlan{}, err
+	}
+	nextDue, err = s.firstFreeBilling(ctx, planKey, nextDue, current.BillingDay)
 	if err != nil {
 		return core.ManualPlan{}, err
 	}
@@ -354,4 +367,27 @@ func (s *Service) CancelPlan(ctx context.Context, actorID int64, id string) (cor
 		return core.ManualPlan{}, fmt.Errorf("%w: plan is already cancelled", core.ErrConflict)
 	}
 	return s.repo.CancelPlan(ctx, planKey, actorID, s.now().UTC())
+}
+
+// firstFreeBilling advances a proposed next due date past any date that already
+// has an occurrence. Without this, editing the schedule onto an existing period
+// (or resuming into one) would leave next_due_date pointing at a row the
+// repository refuses to insert again, stalling all future periods.
+func (s *Service) firstFreeBilling(ctx context.Context, planID string, start core.Date, billingDay int) (core.Date, error) {
+	occurrences, err := s.repo.ListOccurrences(ctx, core.ManualOccurrenceFilter{PlanID: planID})
+	if err != nil {
+		return "", err
+	}
+	taken := make(map[core.Date]bool, len(occurrences))
+	for _, occurrence := range occurrences {
+		taken[occurrence.DueDate] = true
+	}
+	due := start
+	for i := 0; i < 24 && taken[due]; i++ {
+		due, err = nextBillingDate(due, billingDay)
+		if err != nil {
+			return "", err
+		}
+	}
+	return due, nil
 }

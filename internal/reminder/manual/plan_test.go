@@ -410,3 +410,101 @@ func TestResumeUsesPlanTimezone(t *testing.T) {
 		t.Fatalf("next due = %s, want 2026-12-15 (plan-local today is the 16th)", resumed.NextDueDate)
 	}
 }
+
+func TestCreatePlanRespectsReminderTimeOnBillingDay(t *testing.T) {
+	cases := []struct {
+		name string
+		now  time.Time
+		want core.Date
+	}{
+		{"before reminder time schedules today", taipeiTime(2026, 11, 15, 8, 59), "2026-11-15"},
+		{"exactly at reminder time schedules today", taipeiTime(2026, 11, 15, 9, 0), "2026-11-15"},
+		{"after reminder time schedules next month", taipeiTime(2026, 11, 15, 9, 1), "2026-12-15"},
+	}
+	for _, c := range cases {
+		repo := newFakeRepo()
+		s := newTestService(repo, testActor)
+		s.now = func() time.Time { return c.now }
+		plan := mustCreatePlan(t, s, testActor, inputWithDay(15))
+		if plan.NextDueDate != c.want {
+			t.Errorf("%s: next due = %s, want %s", c.name, plan.NextDueDate, c.want)
+		}
+		if occurrences := repo.occurrencesFor(plan.ID); len(occurrences) != 0 {
+			t.Errorf("%s: creation must not materialize occurrences", c.name)
+		}
+	}
+}
+
+func TestResumePlanAfterReminderTimeSkipsToday(t *testing.T) {
+	repo := newFakeRepo()
+	plan := core.ManualPlan{
+		ID: "plan1", Title: "Hosting", BillingDay: 15, ReminderTime: "09:00",
+		Timezone: "Asia/Taipei", Status: core.ManualPlanPaused, NextDueDate: "2026-11-15",
+		CreatedAt: fixedNow().UTC(), UpdatedAt: fixedNow().UTC(),
+	}
+	repo.putPlan(plan)
+	s := newTestService(repo, testActor)
+	s.now = func() time.Time { return taipeiTime(2026, 11, 15, 10, 0) }
+	resumed, err := s.ResumePlan(context.Background(), testActor, plan.ID)
+	if err != nil {
+		t.Fatalf("ResumePlan: %v", err)
+	}
+	if resumed.NextDueDate != "2026-12-15" {
+		t.Errorf("resumed next due = %s, want 2026-12-15", resumed.NextDueDate)
+	}
+}
+
+func TestUpdateScheduleAfterReminderTimeSchedulesNextMonth(t *testing.T) {
+	repo := newFakeRepo()
+	s := newTestService(repo, testActor)
+	s.now = func() time.Time { return taipeiTime(2026, 11, 15, 10, 0) }
+	plan := mustCreatePlan(t, s, testActor, inputWithDay(10))
+	updated, err := s.UpdatePlan(context.Background(), testActor, plan.ID, inputWithDay(15))
+	if err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+	if updated.NextDueDate != "2026-12-15" {
+		t.Errorf("updated next due = %s, want 2026-12-15", updated.NextDueDate)
+	}
+}
+
+func TestUpdateScheduleSkipsExistingOccurrence(t *testing.T) {
+	repo := newFakeRepo()
+	s := newTestService(repo, testActor)
+	s.now = func() time.Time { return taipeiTime(2026, 11, 15, 10, 0) }
+	plan := mustCreatePlan(t, s, testActor, inputWithDay(10))
+	repo.putOccurrence(core.ManualOccurrence{
+		ID: "occ1", PlanID: plan.ID, DueDate: "2026-12-15",
+		Status: core.ManualOccurrencePending, CreatedAt: fixedNow().UTC(), UpdatedAt: fixedNow().UTC(),
+	})
+	updated, err := s.UpdatePlan(context.Background(), testActor, plan.ID, inputWithDay(15))
+	if err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+	if updated.NextDueDate != "2027-01-15" {
+		t.Errorf("updated next due = %s, want 2027-01-15", updated.NextDueDate)
+	}
+}
+
+func TestResumeSkipsExistingOccurrence(t *testing.T) {
+	repo := newFakeRepo()
+	plan := core.ManualPlan{
+		ID: "plan1", Title: "Hosting", BillingDay: 15, ReminderTime: "09:00",
+		Timezone: "Asia/Taipei", Status: core.ManualPlanPaused, NextDueDate: "2026-11-15",
+		CreatedAt: fixedNow().UTC(), UpdatedAt: fixedNow().UTC(),
+	}
+	repo.putPlan(plan)
+	repo.putOccurrence(core.ManualOccurrence{
+		ID: "occ1", PlanID: plan.ID, DueDate: "2026-12-15",
+		Status: core.ManualOccurrencePending, CreatedAt: fixedNow().UTC(), UpdatedAt: fixedNow().UTC(),
+	})
+	s := newTestService(repo, testActor)
+	s.now = func() time.Time { return taipeiTime(2026, 11, 15, 10, 0) }
+	resumed, err := s.ResumePlan(context.Background(), testActor, plan.ID)
+	if err != nil {
+		t.Fatalf("ResumePlan: %v", err)
+	}
+	if resumed.NextDueDate != "2027-01-15" {
+		t.Errorf("resumed next due = %s, want 2027-01-15", resumed.NextDueDate)
+	}
+}

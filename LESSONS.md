@@ -285,3 +285,15 @@
 - 修复 commit：本次 T11 实现提交（SHA 见 result.txt）。
 - Done right: persistJump 先 UpdatePlan 写入 target 并记 PLAN_UPDATED，再对 target 调用 CreateOccurrence；两步之间崩溃也安全，下一 tick 会补建。
 - Seen 1× (2026-11-15).
+
+**创建/恢复/改期时，今天是否算本期必须按计划本地提醒时刻判断，不能只比较日期。**
+- T11 初版（c466e10 合并后）用 firstBillingOnOrAfter 只比较日历日期：在账单日 10:00 创建提醒时间为 09:00 的计划时，next_due_date 仍是今天，随后 tick 立即创建当期并发送，违反“超过提醒时间则安排下月、避免创建后立即触发”。
+- 修复 commit：本次 orchestrator 修复提交（firstBillingAfter 按本地时刻比较；08:59/09:00 算今天，09:01 算下月）。
+- Done right: 新增 TestCreatePlanRespectsReminderTimeOnBillingDay / TestResumePlanAfterReminderTimeSkipsToday / TestUpdateScheduleAfterReminderTimeSchedulesNextMonth。
+- Seen 1× (2026-11-15).
+
+**改期或恢复后的 next_due_date 必须跳过已有 occurrence 的日期，否则该计划永久卡在无法插入的日期。**
+- T11 初版改期只重算日期，不检查 UNIQUE(plan_id,due_date)：若目标日期已有 occurrence，CreateOccurrence 永远返回 false，后续周期不再生成。
+- 修复 commit：本次 orchestrator 修复提交（firstFreeBilling 读取该计划全部 occurrence，最多前进 24 个月找空位）。
+- Done right: TestUpdateScheduleSkipsExistingOccurrence / TestResumeSkipsExistingOccurrence 断言跳到下一个空位月份。
+- Seen 1× (2026-11-15).

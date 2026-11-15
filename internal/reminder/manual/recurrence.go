@@ -60,6 +60,35 @@ func firstBillingOnOrAfter(today core.Date, billingDay int) (core.Date, error) {
 	return billingDate(year, month, billingDay), nil
 }
 
+// firstBillingAfter is the creation/resume rule from the feature contract: the
+// billing day counts today only while the plan-local reminder time has not
+// passed. At exactly the reminder instant today still counts, because the next
+// tick is the reminder itself; one second later the period moves to next month.
+func firstBillingAfter(now time.Time, billingDay, hour, minute int, loc *time.Location) (core.Date, error) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := now.In(loc)
+	today := core.LocalDate(now, loc)
+	candidate, err := firstBillingOnOrAfter(today, billingDay)
+	if err != nil {
+		return "", err
+	}
+	if candidate != today {
+		return candidate, nil
+	}
+	at := time.Date(local.Year(), local.Month(), local.Day(), hour, minute, 0, 0, loc)
+	if !local.After(at) {
+		return today, nil
+	}
+	t, err := parseDate(today)
+	if err != nil {
+		return "", err
+	}
+	year, month := nextMonth(t.Year(), t.Month())
+	return billingDate(year, month, billingDay), nil
+}
+
 // nextBillingDate advances one calendar month and re-applies the clamp. It
 // never uses AddDate, because AddDate normalizes 31 January to 3 March and
 // would skip a short month.
