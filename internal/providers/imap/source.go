@@ -166,6 +166,9 @@ func (s *Source) allowedDomains() []string {
 	if len(s.AllowedDomains) > 0 {
 		return s.AllowedDomains
 	}
+	if len(s.cfg.AllowedDomains) > 0 {
+		return s.cfg.AllowedDomains
+	}
 	return []string{"qq.com", "foxmail.com"}
 }
 

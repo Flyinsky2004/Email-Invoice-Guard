@@ -40,3 +40,7 @@ DeliveryPayload.Kind values are email, invoice, reminder (not worker-specific sy
 ## Approved change CR002 — vendor URL policy (Codex integration)
 
 Added optional core.InvoiceURLValidator { ValidateInvoiceURL(Invoice) bool }. No existing interface or constructor signatures change. Merchant parsers own their URL policy; Registry delegates by matching Vendor/ProviderID; Telegram performs generic HTTPS checks and consults the injected registry policy, failing closed without one. RFCHOST enforces exact host/path/single matching invoice id. A future parser can enable its trusted payment links by implementing the optional policy without modifying Telegram or pipeline code.
+
+## Approved change CR003 — confirmed QQ-hosted address aliases
+
+IMAPConfig.AllowedDomains []string and QQ_ALLOWED_DOMAINS permit an explicit operator-maintained address-domain allowlist. Defaults qq.com,foxmail.com. IMAP Source applies it unless a test-only explicit exported override is provided; credentials are still verified against QQ IMAP over TLS before storage. This enables known QQ-hosted aliases without accepting arbitrary IMAP hosts or QQ login passwords. Domain configuration is not proof of access: live authentication must succeed.
