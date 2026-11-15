@@ -79,35 +79,49 @@ func (e *Engine) syncFolder(ctx context.Context, source core.MailSource, account
 			return providerError(err)
 		}
 
-		next := batch.NextCursor
+		raw := batch.NextCursor
+		// A provider-signalled baseline change (Microsoft 410 rebuild) or a
+		// changed UIDVALIDITY starts a new baseline. The current page must be
+		// classified against the new baseline, and the new cursor is committed
+		// atomically with the page work rather than inheriting the old
+		// BaselineComplete flag.
+		baselineChanged := !raw.BaselineAt.IsZero() && !raw.BaselineAt.Equal(cursor.BaselineAt)
+		uidChanged := cursor.UIDValidity != 0 && raw.UIDValidity != 0 && raw.UIDValidity != cursor.UIDValidity
+
+		next := raw
 		next.AccountID = account.ID
 		next.FolderID = folder.ID
-		if next.BaselineAt.IsZero() {
-			next.BaselineAt = cursor.BaselineAt
-		}
-		if next.UIDValidity == 0 {
-			next.UIDValidity = cursor.UIDValidity
-		}
-		next.BaselineComplete = cursor.BaselineComplete || !batch.HasMore
 
-		// A changed UIDVALIDITY rebuilds this folder's baseline without
-		// replaying prior known mail; the new baseline is persisted before
-		// processing the page.
-		if cursor.UIDValidity != 0 && next.UIDValidity != 0 && next.UIDValidity != cursor.UIDValidity {
+		if baselineChanged || uidChanged {
+			newBaseline := raw.BaselineAt
+			if newBaseline.IsZero() {
+				newBaseline = e.now().UTC()
+			}
+			uidValidity := raw.UIDValidity
+			if uidValidity == 0 {
+				uidValidity = cursor.UIDValidity
+			}
 			reset := core.SyncCursor{
 				AccountID:        account.ID,
 				FolderID:         folder.ID,
-				BaselineAt:       e.now().UTC(),
+				Value:            raw.Value,
+				UIDValidity:      uidValidity,
+				LastUID:          raw.LastUID,
+				BaselineAt:       newBaseline,
 				BaselineComplete: false,
-				UIDValidity:      next.UIDValidity,
 				UpdatedAt:        e.now().UTC(),
 			}
-			if err := e.store.SaveCursor(ctx, reset); err != nil {
-				return storageError()
-			}
 			cursor = reset
-			next.BaselineAt = reset.BaselineAt
-			next.BaselineComplete = !batch.HasMore
+			next = reset
+			next.BaselineComplete = raw.BaselineComplete || !batch.HasMore
+		} else {
+			if next.BaselineAt.IsZero() {
+				next.BaselineAt = cursor.BaselineAt
+			}
+			if next.UIDValidity == 0 {
+				next.UIDValidity = cursor.UIDValidity
+			}
+			next.BaselineComplete = cursor.BaselineComplete || !batch.HasMore
 		}
 
 		if err := e.processPage(ctx, account, folder, cursor, next, batch.Emails); err != nil {

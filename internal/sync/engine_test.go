@@ -748,3 +748,116 @@ func TestReviewInvoiceSkipsAssetLinker(t *testing.T) {
 		t.Fatalf("review invoice notification = %+v", delivery.Payload)
 	}
 }
+
+func TestBaselineAtChangeRebuildsBaseline(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	oldBaseline := testNow.Add(-24 * time.Hour)
+	if err := store.SaveCursor(context.Background(), core.SyncCursor{
+		AccountID:        "acc",
+		FolderID:         "inbox",
+		Value:            "old",
+		BaselineAt:       oldBaseline,
+		BaselineComplete: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	source := &fakeSource{typ: core.Microsoft, folders: []core.MailFolder{inboxFolder()}}
+	source.syncFn = func(ctx context.Context, account core.MailAccount, folder core.MailFolder, cursor core.SyncCursor) (core.SyncBatch, error) {
+		calls++
+		if calls == 1 {
+			// Microsoft 410-style rebuild: a new BaselineAt with
+			// BaselineComplete=false while paging.
+			return core.SyncBatch{
+				Emails: []core.NormalizedEmail{testEmail("m-old", testNow.Add(-48*time.Hour), "old", "old body")},
+				NextCursor: core.SyncCursor{
+					BaselineAt:       testNow,
+					BaselineComplete: false,
+					Value:            "reset-1",
+				},
+				HasMore: true,
+			}, nil
+		}
+		if !cursor.BaselineAt.Equal(testNow) || cursor.BaselineComplete {
+			t.Errorf("new baseline cursor not persisted before next page: %+v", cursor)
+		}
+		return core.SyncBatch{
+			NextCursor: core.SyncCursor{BaselineAt: testNow, Value: "reset-2"},
+			HasMore:    false,
+		}, nil
+	}
+	engine := newTestEngine(t, store, source, &fakeParser{}, nil)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	email, _ := store.emailByProviderID("m-old")
+	if !email.SyncMetadata.Historical {
+		t.Fatalf("mail from the rebuilt baseline was not historical: %+v", email.SyncMetadata)
+	}
+	if _, delivered := store.deliveryForEmail(email.InternalEmailID); delivered {
+		t.Fatal("historical mail was delivered after a baseline rebuild")
+	}
+	final, ok := store.getCursor("acc", "inbox")
+	if !ok || !final.BaselineAt.Equal(testNow) || !final.BaselineComplete {
+		t.Fatalf("unexpected final cursor %+v", final)
+	}
+}
+
+func TestUIDValidityResetPersistsBaselineWhilePaging(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	if err := store.SaveCursor(context.Background(), core.SyncCursor{
+		AccountID:        "acc",
+		FolderID:         "inbox",
+		Value:            "old",
+		UIDValidity:      1,
+		LastUID:          10,
+		BaselineAt:       testNow.Add(-24 * time.Hour),
+		BaselineComplete: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	source := &fakeSource{typ: core.Microsoft, folders: []core.MailFolder{inboxFolder()}}
+	source.syncFn = func(ctx context.Context, account core.MailAccount, folder core.MailFolder, cursor core.SyncCursor) (core.SyncBatch, error) {
+		calls++
+		if calls == 1 {
+			return core.SyncBatch{
+				Emails: []core.NormalizedEmail{testEmail("m-old", testNow.Add(-48*time.Hour), "old", "old body")},
+				NextCursor: core.SyncCursor{
+					UIDValidity: 2,
+					LastUID:     1,
+					Value:       "uid-1",
+				},
+				HasMore: true,
+			}, nil
+		}
+		if cursor.UIDValidity != 2 || cursor.BaselineComplete || !cursor.BaselineAt.Equal(testNow) {
+			t.Errorf("UIDVALIDITY reset cursor not persisted before next page: %+v", cursor)
+		}
+		return core.SyncBatch{
+			NextCursor: core.SyncCursor{UIDValidity: 2, Value: "uid-2"},
+			HasMore:    false,
+		}, nil
+	}
+	engine := newTestEngine(t, store, source, &fakeParser{}, nil)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	email, _ := store.emailByProviderID("m-old")
+	if !email.SyncMetadata.Historical {
+		t.Fatalf("mail from the reset UIDVALIDITY was not historical: %+v", email.SyncMetadata)
+	}
+	if _, delivered := store.deliveryForEmail(email.InternalEmailID); delivered {
+		t.Fatal("historical mail was delivered after a UIDVALIDITY reset")
+	}
+	final, ok := store.getCursor("acc", "inbox")
+	if !ok || final.UIDValidity != 2 || !final.BaselineComplete || !final.BaselineAt.Equal(testNow) {
+		t.Fatalf("unexpected final cursor %+v", final)
+	}
+}
