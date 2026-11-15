@@ -9,3 +9,51 @@
 - 修复 commit：待冻结契约提交；启动包装改为交互登录 shell 并显式补齐已安装 Node bin，重新校准。
 - Done right: 在 agent 中实际运行 command -v go git python3 node，再确认 Go 构建/测试可用。
 - Seen 1× (2026-11-15).
+
+**独立 Store 的内存 SQLite 必须使用随机具名 URI，禁止共用 file::memory:?cache=shared。**
+- T06 初版（eee4718 前）用固定 file::memory:?cache=shared，两个同时 Open 的 Store 会互相看到对方数据；Codex 早期审查指出。
+- 修复 commit: eee47188bfa046287c7ff73fb61b8f547d71e06a（每次 Open 生成 eig-<随机ID> 具名内存库，同池共享、跨 Store 隔离）。
+- Done right: TestMemoryStoresAreIsolated 断言 A 库账号在 B 库返回 ErrNotFound。
+- Seen 1× (2026-11-15).
+
+**备份目标绝不能先删除或覆盖；必须绝对路径规范化比较、拒绝任何已存在目标并以 O_EXCL 0600 创建。**
+- T06 初版（eee4718 前）先 os.Remove(destination) 再 VACUUM INTO，相对/符号/硬链接别名可能删掉 live DB，失败还会丢失旧备份；Codex 高优先级安全审查指出。
+- 修复 commit: eee47188bfa046287c7ff73fb61b8f547d71e06a（filepath.Abs 比较 live/-wal/-shm，Lstat 拒绝已存在目标，O_EXCL 创建空文件，失败只删本次新建文件）。
+- Done right: TestBackupRejectsRelativeAliasOfLiveDatabase / Symlink / Hardlink / ExistingBackupAndPreservesIt / FailureRemovesOnlyCreatedTarget。
+- Seen 1× (2026-11-15).
+
+**内部全量列表的 Limit<=0 不能被当作默认分页上限。**
+- T06 初版（eee4718 前）ListInvoices/ListAssets 复用 clampLimit(0)=100，会永久漏掉第 101 张 pending 发票和资产关联；Codex 集成审查指出。
+- 修复 commit: eee47188bfa046287c7ff73fb61b8f547d71e06a（Limit<=0 不加 LIMIT，正数上限 1000；EmailFilter 保持有限默认）。
+- Done right: TestListInvoicesZeroLimitReturnsAll / TestListAssetsZeroLimitReturnsAll 各造 150 条断言全量。
+- Seen 1× (2026-11-15).
+
+**子表 ID 冲突要归一化，不能因调用方复用 ID 丢数据。**
+- T06 测试暴露：多封邮件复用附件 ID 触发 email_attachments UNIQUE 失败，整封邮件保存失败。
+- 修复 commit: eee47188bfa046287c7ff73fb61b8f547d71e06a（附件插入冲突时生成新 ID 并回写到返回结构）。
+- Done right: 测试中同一附件 ID 的多封邮件均成功保存且 roundtrip 一致。
+- Seen 1× (2026-11-15).
+
+**追加式审计事件按插入顺序（rowid）排序，不按调用方传入时间。**
+- T06 测试暴露：Transition 使用调用方传入的早于 CREATED 的时间，按 created_at 排序把 PAID 排到 CREATED 前。
+- 修复 commit: eee47188bfa046287c7ff73fb61b8f547d71e06a（InvoiceEvents ORDER BY rowid）。
+- Done right: TestTransitionCompareAndSwapIsIdempotent 断言事件顺序 CREATED → PAID_CONFIRMED。
+- Seen 1× (2026-11-15).
+
+**持有未关闭的 *sql.Rows 时不得再发子查询，尤其单连接内存库会死锁。**
+- T06 初版 ListInvoices/AssetInvoices 在 rows 未关闭时调用 invoiceItems；内存库 MaxOpenConns(1) 会永久等待；Codex 审查提醒。
+- 修复 commit: eee47188bfa046287c7ff73fb61b8f547d71e06a（先收集并 Close rows，再加载子项）。
+- Done right: 所有列表方法先 Close rows 再 get 子项，-race 与并发测试通过。
+- Seen 1× (2026-11-15).
+
+**SQLite TEXT 时间必须固定宽度 UTC 布局，保证字典序等于时间序。**
+- T06 审查提醒：RFC3339Nano 可变小数位会让整秒 "…00Z" 与同秒 "…00.123Z" 错序，影响租约/过期/available_at 比较。
+- 修复 commit: eee47188bfa046287c7ff73fb61b8f547d71e06a（统一 2006-01-02T15:04:05.000000000Z）。
+- Done right: TestFixedWidthTimeOrdering / TestClaimDeliverySameSecondBoundary / TestSessionExpirySameSecondBoundary。
+- Seen 1× (2026-11-15).
+
+**资产的 LastKnownServiceStart/End 是最近一个账期，不能取历史 MIN/MAX 拼接。**
+- T06 初版（eee4718）mergeAsset 取 start MIN、end MAX，会把不同续费周期拼成历史跨度，旧账单还能覆盖 model/os/LastInvoice；集成审查指出。
+- 修复 commit: b8c5980d5afea5d30451eb1a2bd7063e95893488（next 有效 end >= cur end 时成对更新 start/end/LastInvoiceID 与描述字段；旧账单只补空字段）。
+- Done right: TestAssetRenewalKeepsLatestPeriodAndOlderReplayCannotOverwrite（2026-10/11 → 2026-11/12，再回放 2026-09）。
+- Seen 1× (2026-11-15).
