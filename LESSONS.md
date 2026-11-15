@@ -279,3 +279,9 @@
 - 修复 commit：本次 T10 修复提交（SHA 见 result.txt）。
 - Done right: CreateDispatch 只写 dispatch/join/outbox；CompleteDelivery 在同一事务内对仍 PENDING_CONFIRMATION 的关联 occurrence 写 notified_at，并为该 dispatch 追加一条 plan 级 REMINDER_SENT（occurrence_id 为空、metadata 含 dispatch_id），重放不重复；Fail/Skip 不写该事件；测试覆盖 pending/paid/重放/失败/跳过。
 - Seen 1× (2026-11-15).
+
+**CreateOccurrence 的 CAS 要求 occ.DueDate 等于已存 next_due_date；追赶跳跃必须先持久化 next_due_date 再创建当期 occurrence。**
+- T11 初版 catch-up 分支直接为 target 调用 CreateOccurrence，仓储因 next_due_date 仍是旧值返回 false，当期 occurrence 静默丢失；TestCatchUpBeyondWindowJumpsForwardToToday 首次运行失败。
+- 修复 commit：本次 T11 实现提交（SHA 见 result.txt）。
+- Done right: persistJump 先 UpdatePlan 写入 target 并记 PLAN_UPDATED，再对 target 调用 CreateOccurrence；两步之间崩溃也安全，下一 tick 会补建。
+- Seen 1× (2026-11-15).
