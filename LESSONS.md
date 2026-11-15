@@ -57,3 +57,27 @@
 - 修复 commit: b8c5980d5afea5d30451eb1a2bd7063e95893488（next 有效 end >= cur end 时成对更新 start/end/LastInvoiceID 与描述字段；旧账单只补空字段）。
 - Done right: TestAssetRenewalKeepsLatestPeriodAndOlderReplayCannotOverwrite（2026-10/11 → 2026-11/12，再回放 2026-09）。
 - Seen 1× (2026-11-15).
+
+**OAuth 回调写入账号与凭据必须同事务，避免半状态账号。**
+- T01 首版 CompleteAuthorization 顺序 SaveAccount+PutCredential；repo 为 Store 时凭据写失败会留下无凭据账号，后续同步持续失败。
+- 修复 commit：dcf6c3c。
+- Done right: 检测 core.Store 并在 Transaction 内同时写 account+credential，失败整体回滚；fakeStore 回归测试断言回滚后 0 账号。
+- Seen 1× (2026-11-15).
+
+**同 provider 同地址重新授权必须复用原 accountID，禁止 NewID 造成唯一键冲突。**
+- T01 首版每次授权 NewID；移除后重加或同地址重授权会触发 UNIQUE(provider,address) 冲突并可能割裂历史账单。
+- 修复 commit：dcf6c3c。
+- Done right: ListAccounts 按 provider+address 大小写不敏感查找并复用 ID/CreatedAt，仅同 owner 可重授权，异 owner 返回 ErrUnauthorized。
+- Seen 1× (2026-11-15).
+
+**服务器 Retry-After 必须完整遵守，不得截断后提前重试。**
+- T01 首版把 120s 截到 30s，违反服务端退避要求并可能加剧限流。
+- 修复 commit：dcf6c3c。
+- Done right: header 值原样等待，仅本地指数退避设上限；用 ctx 取消控制长等待，回归测试断言 120s 不被截断且取消前不重试。
+- Seen 1× (2026-11-15).
+
+**HTTP 重定向必须锁定产生该请求的 origin，不能使用多 origin 联合白名单。**
+- T01 首版允许 Graph/Authority 两 origin 互相重定向，token 端点可能把表单请求导向 Graph origin。
+- 修复 commit：dcf6c3c。
+- Done right: CheckRedirect 比较 via[0] 与目标 origin，跨 origin 直接拒绝；回归测试覆盖 token→Graph 与 Graph→authority 均 0 命中。
+- Seen 1× (2026-11-15).
