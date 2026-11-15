@@ -267,3 +267,15 @@
 - 修复 commit：本次脚本交付调整（`scripts/update.sh` 入库，文档改用 raw.githubusercontent.com 的 main 地址，Release 只上传二进制与校验和）。
 - Done right: 脚本从仓库 `main` 获取；`update.sh` 负责取最新 `install.sh` 并执行升级；Release 工作流只发布二进制、`SHA256SUMS` 与压缩包，脚本修复无需发版。
 - Seen 1× (2026-11-15).
+
+**新增迁移必须同步更新既有 schema 版本断言，且迁移任务白名单要覆盖该测试文件。**
+- T10 实现 0002 迁移后（本次提交前），`internal/storage/store_test.go` 仍断言 `MAX(version)=1` 与 `schema_migrations` 行数=1，导致 `go test ./...` 失败；该文件不在 T10 五文件白名单内，Worker 按规则不能自行修改。
+- 修复 commit：本次 T10 提交（orchestrator 批准扩白名单后，store_test.go 两处期望值改为 2；SHA 见 result.txt）。
+- Done right: 迁移任务的白名单包含会因新版本失效的既有迁移测试，或派工前由 orchestrator 先把断言改为“最新版本”。
+- Seen 1× (2026-11-15).
+
+**手动提醒的 notified_at 与 REMINDER_SENT 事件必须由投递完成写入，不能在入队时写。**
+- T10 初版（本次修复前）CreateDispatch 在入队时写 notified_at，CompleteDelivery 从不写 REMINDER_SENT；语义上把“已通知”提前到“已排队”，且审计事件缺失。验收审查指出。
+- 修复 commit：本次 T10 修复提交（SHA 见 result.txt）。
+- Done right: CreateDispatch 只写 dispatch/join/outbox；CompleteDelivery 在同一事务内对仍 PENDING_CONFIRMATION 的关联 occurrence 写 notified_at，并为该 dispatch 追加一条 plan 级 REMINDER_SENT（occurrence_id 为空、metadata 含 dispatch_id），重放不重复；Fail/Skip 不写该事件；测试覆盖 pending/paid/重放/失败/跳过。
+- Seen 1× (2026-11-15).
