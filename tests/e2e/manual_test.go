@@ -127,6 +127,11 @@ func outboxPayload(t *testing.T, s *storage.Store, outboxID string) core.Deliver
 func TestManualReminderEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	store, path, key := openStore(t)
+	// This test asserts English display text; pin the language explicitly since
+	// the bot defaults to Simplified Chinese.
+	if err := store.SetSetting(ctx, "language", "en"); err != nil {
+		t.Fatalf("set language: %v", err)
+	}
 	tg := newMockTelegram(t)
 	cfg := manualConfig(tg)
 	svc := manualreminder.NewService(store, cfg, discardLogger())

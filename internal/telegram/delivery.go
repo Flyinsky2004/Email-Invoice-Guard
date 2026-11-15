@@ -25,7 +25,10 @@ func (b *Bot) DeliverOnce(ctx context.Context) (bool, error) {
 }
 
 func (b *Bot) deliver(ctx context.Context, delivery *core.Delivery) {
-	parts, markup, invoiceID, ok := b.renderDelivery(ctx, delivery)
+	// Resolve the language once per delivery; a change applies to the next job
+	// without a restart.
+	tr := b.tr(ctx)
+	parts, markup, invoiceID, ok := b.renderDelivery(ctx, tr, delivery)
 	if !ok {
 		return
 	}
@@ -126,10 +129,10 @@ func (b *Bot) deliver(ctx context.Context, delivery *core.Delivery) {
 
 // renderDelivery resolves the payload to its formatted parts. It returns false
 // when the job was skipped because its source is gone or a reminder is stale.
-func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (parts []string, markup *inlineKeyboard, invoiceID string, ok bool) {
+func (b *Bot) renderDelivery(ctx context.Context, tr translator, delivery *core.Delivery) (parts []string, markup *inlineKeyboard, invoiceID string, ok bool) {
 	payload := delivery.Payload
 	if payload.Kind == "manual" || payload.ManualPlanID != "" {
-		return b.renderManualDelivery(ctx, delivery)
+		return b.renderManualDelivery(ctx, tr, delivery)
 	}
 	invoiceDelivery := payload.Kind == "invoice" || payload.Kind == "reminder" ||
 		(payload.InvoiceID != "" && payload.EmailID == "")
@@ -154,11 +157,11 @@ func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (part
 			b.failDelivery(ctx, delivery, false, "load account: "+sanitizeReason(err))
 			return nil, nil, "", false
 		}
-		parts := formatInvoiceAt(inv, account, b.location(ctx))
+		parts := formatInvoiceAtLang(inv, account, b.location(ctx), tr)
 		if payload.Kind == "reminder" {
 			// Recompute against the current local date instead of trusting the
 			// scheduling-time payload text.
-			parts = appendEscapedLine(parts, b.reminderNote(ctx, inv))
+			parts = appendEscapedLine(parts, b.reminderNote(ctx, tr, inv))
 		}
 		// Prefer the mail that triggered this notification so a second mail for
 		// the same invoice still opens its own full text. The persisted invoice
@@ -167,7 +170,7 @@ func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (part
 		if payload.EmailID != "" {
 			keyboardInvoice.SourceEmailID = payload.EmailID
 		}
-		return parts, b.invoiceKeyboard(keyboardInvoice), inv.ID, true
+		return parts, b.invoiceKeyboardLang(tr, keyboardInvoice), inv.ID, true
 	}
 
 	email, err := b.store.GetEmail(ctx, payload.EmailID)
@@ -184,13 +187,13 @@ func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (part
 		b.failDelivery(ctx, delivery, false, "load account: "+sanitizeReason(err))
 		return nil, nil, "", false
 	}
-	return formatEmailAt(email, account, b.location(ctx)), nil, "", true
+	return formatEmailAtLang(email, account, b.location(ctx), tr), nil, "", true
 }
 
 // renderManualDelivery renders a daily summary for an operator-declared plan.
 // A nil manual service disables the branch entirely; a missing source is
 // skipped, while a transient read failure is retried.
-func (b *Bot) renderManualDelivery(ctx context.Context, delivery *core.Delivery) (parts []string, markup *inlineKeyboard, invoiceID string, ok bool) {
+func (b *Bot) renderManualDelivery(ctx context.Context, tr translator, delivery *core.Delivery) (parts []string, markup *inlineKeyboard, invoiceID string, ok bool) {
 	if b.manual == nil {
 		b.skipDelivery(ctx, delivery, "manual reminders are disabled")
 		return nil, nil, "", false
@@ -226,27 +229,27 @@ func (b *Bot) renderManualDelivery(ctx context.Context, delivery *core.Delivery)
 		b.skipDelivery(ctx, delivery, "manual summary has no occurrences")
 		return nil, nil, "", false
 	}
-	return formatManualSummaryAt(plan, occurrences), b.manualSummaryKeyboard(plan, occurrences), "", true
+	return formatManualSummaryAt(plan, occurrences, tr), b.manualSummaryKeyboard(tr, plan, occurrences), "", true
 }
 
 // reminderNote renders the due-distance line at delivery time so a reminder
 // queued earlier still reports the correct number of days.
-func (b *Bot) reminderNote(ctx context.Context, inv core.Invoice) string {
+func (b *Bot) reminderNote(ctx context.Context, tr translator, inv core.Invoice) string {
 	if inv.DueDate == "" {
-		return "Reminder: due date unknown."
+		return tr.t("reminder.unknownDue")
 	}
 	today := core.LocalDate(b.now(), b.location(ctx))
 	days, err := core.DaysUntil(inv.DueDate, today)
 	if err != nil {
-		return "Reminder: due " + string(inv.DueDate) + "."
+		return tr.t("reminder.dueOn", string(inv.DueDate))
 	}
 	switch {
 	case days > 0:
-		return fmt.Sprintf("Reminder: due in %d day(s) (%s).", days, inv.DueDate)
+		return tr.t("reminder.dueIn", days, string(inv.DueDate))
 	case days == 0:
-		return fmt.Sprintf("Reminder: due today (%s).", inv.DueDate)
+		return tr.t("reminder.dueToday", string(inv.DueDate))
 	default:
-		return fmt.Sprintf("Reminder: overdue by %d day(s) (%s).", -days, inv.DueDate)
+		return tr.t("reminder.overdue", -days, string(inv.DueDate))
 	}
 }
 

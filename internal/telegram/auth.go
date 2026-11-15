@@ -150,22 +150,28 @@ func (b *Bot) invoiceURLAllowed(inv core.Invoice) bool {
 	return ok && policy.ValidateInvoiceURL(inv)
 }
 
-// invoiceKeyboard builds the enhanced invoice keyboard. The merchant URL is
+// invoiceKeyboard builds the enhanced invoice keyboard in English. It keeps the
+// original signature for external callers; the Bot uses invoiceKeyboardLang.
+func (b *Bot) invoiceKeyboard(inv core.Invoice) *inlineKeyboard {
+	return b.invoiceKeyboardLang(translator{lang: langEN}, inv)
+}
+
+// invoiceKeyboardLang builds the enhanced invoice keyboard. The merchant URL is
 // only attached when it matches the fixed trusted invoice shape; the original
 // mail is always reachable through a callback.
-func (b *Bot) invoiceKeyboard(inv core.Invoice) *inlineKeyboard {
+func (b *Bot) invoiceKeyboardLang(tr translator, inv core.Invoice) *inlineKeyboard {
 	rows := make([][]inlineButton, 0, 3)
 	if b.invoiceURLAllowed(inv) {
-		rows = append(rows, []inlineButton{{Text: "View invoice", URL: inv.URL}})
+		rows = append(rows, []inlineButton{{Text: tr.t("button.viewInvoice"), URL: inv.URL}})
 	}
 	if inv.SourceEmailID != "" {
-		rows = append(rows, []inlineButton{{Text: "Original mail", CallbackData: callbackData(cbEmail, inv.SourceEmailID)}})
+		rows = append(rows, []inlineButton{{Text: tr.t("button.originalMail"), CallbackData: callbackData(cbEmail, inv.SourceEmailID)}})
 	}
 	switch inv.Status {
 	case core.PendingConfirmation:
-		rows = append(rows, []inlineButton{{Text: "Mark paid", CallbackData: callbackData(cbPaidPrompt, inv.ID)}})
+		rows = append(rows, []inlineButton{{Text: tr.t("button.markPaid"), CallbackData: callbackData(cbPaidPrompt, inv.ID)}})
 	case core.PaidConfirmed:
-		rows = append(rows, []inlineButton{{Text: "Undo paid", CallbackData: callbackData(cbPaidUndo, inv.ID)}})
+		rows = append(rows, []inlineButton{{Text: tr.t("button.undoPaid"), CallbackData: callbackData(cbPaidUndo, inv.ID)}})
 	}
 	if len(rows) == 0 {
 		return nil

@@ -45,7 +45,7 @@ func (b *Bot) handleMessage(ctx context.Context, m *message) {
 	rep, err := b.runCommand(ctx, cmd, args, m.From.ID, m.Chat.ID)
 	if err != nil {
 		b.log.Warn("telegram: command failed", "command", cmd, "error", err.Error())
-		rep = reply{parts: []string{"Command failed. Check the server logs for details."}}
+		rep = reply{parts: []string{b.text(ctx, "error.commandFailed")}}
 	}
 	b.sendReply(ctx, m.Chat.ID, rep, cmd)
 }
@@ -72,13 +72,14 @@ func parseCommand(text string) (string, []string) {
 }
 
 func (b *Bot) runCommand(ctx context.Context, cmd string, args []string, userID, chatID int64) (reply, error) {
+	tr := b.tr(ctx)
 	switch cmd {
 	case "start":
-		return reply{parts: []string{"Invoice Guard is ready. Use /help to see available commands."}}, nil
+		return reply{parts: []string{tr.t("start.welcome")}}, nil
 	case "help":
-		text := helpText
+		text := tr.t("help.body")
 		if b.manual != nil {
-			text += "\n" + manualHelpText
+			text += "\n" + tr.t("help.manualBody")
 		}
 		return reply{parts: []string{text}}, nil
 	case "add":
@@ -130,124 +131,97 @@ func (b *Bot) runCommand(ctx context.Context, cmd string, args []string, userID,
 	case "reminder_history":
 		return b.commandReminderHistory(ctx, args)
 	case "cancel":
-		return b.commandCancelWizard(chatID, userID), nil
+		return b.commandCancelWizard(ctx, chatID, userID), nil
 	default:
-		return reply{parts: []string{"Unknown command. Use /help."}}, nil
+		return reply{parts: []string{tr.t("help.unknownCommand")}}, nil
 	}
 }
 
-const helpText = `<b>Invoice Guard commands</b>
-/start - welcome
-/help - this help
-/add microsoft|qq - connect a mailbox
-/accounts - list connected accounts
-/remove &lt;accountID&gt; [confirm] - disable an account
-/sync - run a mailbox sync now
-/latest - latest 5 mails
-/search &lt;text&gt; - search stored mail
-/invoices [pending|paid|overdue|review] - list invoices
-/pending /paid /overdue - invoice shortcuts
-/assets [provider] - list tracked assets
-/providers - supported sources and parsers
-/status - system counters
-/settings - show or update settings
-/settings folder &lt;accountID&gt; - list folders for an account
-/settings folder &lt;accountID&gt; &lt;folderID&gt; on|off - enable or disable a folder`
-
-const manualHelpText = `<b>Manual recurring reminders</b>
-/reminder_add - create a recurring bill with the wizard
-/reminders - list manual plans
-/reminder &lt;id&gt; - show one plan and its pending occurrences
-/reminder_edit &lt;id&gt; - edit a plan with the wizard
-/reminder_pause &lt;id&gt; - pause a plan
-/reminder_resume &lt;id&gt; - resume a paused plan
-/reminder_delete &lt;id&gt; - cancel a plan
-/reminder_paid &lt;occurrenceID&gt; - confirm an occurrence paid
-/reminder_pending - list pending occurrences
-/reminder_history &lt;id&gt; - plan events and dispatches
-/cancel - cancel the active wizard`
-
 func (b *Bot) commandAdd(ctx context.Context, args []string, userID int64) (reply, error) {
+	tr := b.tr(ctx)
 	if len(args) == 0 {
-		return reply{parts: []string{"Usage: /add microsoft|qq"}}, nil
+		return reply{parts: []string{tr.t("add.usage")}}, nil
 	}
 	provider := core.ProviderType(strings.ToLower(args[0]))
 	source, ok := b.onboarding[provider]
 	if !ok || source == nil {
-		return reply{parts: []string{"Unsupported provider. Use microsoft or qq."}}, nil
+		return reply{parts: []string{tr.t("add.unsupported")}}, nil
 	}
 	url, err := source.Begin(ctx, userID)
 	if err != nil {
 		return reply{}, fmt.Errorf("begin onboarding: %w", err)
 	}
 	if strings.TrimSpace(url) == "" {
-		return reply{parts: []string{"Onboarding did not return a link. Check the server logs."}}, nil
+		return reply{parts: []string{tr.t("add.noLink")}}, nil
 	}
 	return reply{parts: []string{
-		"Open this one-time link to connect " + string(provider) + ":\n" + escape(url),
+		tr.t("add.openLink", string(provider), escape(url)),
 	}}, nil
 }
 
 func (b *Bot) commandAccounts(ctx context.Context) (reply, error) {
+	tr := b.tr(ctx)
 	accounts, err := b.store.ListAccounts(ctx)
 	if err != nil {
 		return reply{}, fmt.Errorf("list accounts: %w", err)
 	}
 	if len(accounts) == 0 {
-		return reply{parts: []string{"No accounts connected. Use /add microsoft|qq."}}, nil
+		return reply{parts: []string{tr.t("accounts.empty")}}, nil
 	}
 	lines := make([]string, 0, len(accounts))
 	for i, a := range accounts {
 		if i >= maxAccountLines {
-			lines = append(lines, fmt.Sprintf("… and %d more", len(accounts)-maxAccountLines))
+			lines = append(lines, tr.t("accounts.more", len(accounts)-maxAccountLines))
 			break
 		}
-		state := "enabled"
+		state := tr.t("common.enabled")
 		if !a.Enabled {
-			state = "disabled"
+			state = tr.t("common.disabled")
 		}
-		line := fmt.Sprintf("• %s (%s, %s) id=%s", a.Address, a.Provider, state, a.ID)
+		line := tr.t("accounts.line", a.Address, string(a.Provider), state, a.ID)
 		if a.LastError != "" {
-			line += " sync_error=" + a.LastError
+			line += tr.t("accounts.syncError", a.LastError)
 		}
 		lines = append(lines, line)
 	}
-	return renderList("Accounts", lines, nil), nil
+	return renderList(tr.t("accounts.title"), lines, nil), nil
 }
 
 func (b *Bot) commandRemove(ctx context.Context, args []string, userID int64) (reply, error) {
+	tr := b.tr(ctx)
 	if len(args) == 0 {
-		return reply{parts: []string{"Usage: /remove <accountID> [confirm]"}}, nil
+		return reply{parts: []string{tr.t("remove.usage")}}, nil
 	}
 	account, err := b.store.GetAccount(ctx, args[0])
 	if err != nil {
-		return reply{parts: []string{"Account not found."}}, nil
+		return reply{parts: []string{tr.t("error.accountNotFound")}}, nil
 	}
 	if account.OwnerUserID != userID {
-		return reply{parts: []string{"Account not found."}}, nil
+		return reply{parts: []string{tr.t("error.accountNotFound")}}, nil
 	}
 	if len(args) > 1 && strings.EqualFold(args[1], "confirm") {
 		if err := b.store.RemoveAccount(ctx, account.ID); err != nil {
 			return reply{}, fmt.Errorf("remove account: %w", err)
 		}
-		return reply{parts: []string{"Account disabled: " + escape(account.Address)}}, nil
+		return reply{parts: []string{tr.t("remove.disabled", escape(account.Address))}}, nil
 	}
 	return reply{
-		parts: []string{"Disable account " + escape(account.Address) + "? Historical mail and invoices are retained."},
+		parts: []string{tr.t("remove.confirmPrompt", escape(account.Address))},
 		keyboard: &inlineKeyboard{InlineKeyboard: [][]inlineButton{
-			{{Text: "Confirm removal", CallbackData: callbackData(cbRemoveConfirm, account.ID)}},
+			{{Text: tr.t("remove.confirmButton"), CallbackData: callbackData(cbRemoveConfirm, account.ID)}},
 		}},
 	}, nil
 }
 
 func (b *Bot) commandSync(ctx context.Context) (reply, error) {
+	tr := b.tr(ctx)
 	if b.syncer == nil {
-		return reply{parts: []string{"Sync is not configured."}}, nil
+		return reply{parts: []string{tr.t("sync.notConfigured")}}, nil
 	}
 	b.syncMu.Lock()
 	if b.syncRunning {
 		b.syncMu.Unlock()
-		return reply{parts: []string{"Sync is already running."}}, nil
+		return reply{parts: []string{tr.t("sync.running")}}, nil
 	}
 	b.syncRunning = true
 	b.syncWG.Add(1)
@@ -269,39 +243,41 @@ func (b *Bot) commandSync(ctx context.Context) (reply, error) {
 			b.log.Warn("telegram: background sync failed", "error", err.Error())
 		}
 	}()
-	return reply{parts: []string{"Sync started in the background."}}, nil
+	return reply{parts: []string{tr.t("sync.started")}}, nil
 }
 
 func (b *Bot) commandLatest(ctx context.Context) (reply, error) {
+	tr := b.tr(ctx)
 	emails, err := b.store.ListEmails(ctx, core.EmailFilter{Limit: latestLimit})
 	if err != nil {
 		return reply{}, fmt.Errorf("list emails: %w", err)
 	}
-	return b.renderEmails(ctx, "Latest mail", emails), nil
+	return b.renderEmails(ctx, tr, tr.t("latest.title"), emails), nil
 }
 
 func (b *Bot) commandSearch(ctx context.Context, args []string) (reply, error) {
+	tr := b.tr(ctx)
 	query := strings.TrimSpace(strings.Join(args, " "))
 	if query == "" {
-		return reply{parts: []string{"Usage: /search <text>"}}, nil
+		return reply{parts: []string{tr.t("search.usage")}}, nil
 	}
 	emails, err := b.store.ListEmails(ctx, core.EmailFilter{Search: query, Limit: listLimit})
 	if err != nil {
 		return reply{}, fmt.Errorf("search emails: %w", err)
 	}
-	return b.renderEmails(ctx, "Search results", emails), nil
+	return b.renderEmails(ctx, tr, tr.t("search.title"), emails), nil
 }
 
-func (b *Bot) renderEmails(ctx context.Context, title string, emails []core.NormalizedEmail) reply {
+func (b *Bot) renderEmails(ctx context.Context, tr translator, title string, emails []core.NormalizedEmail) reply {
 	if len(emails) == 0 {
-		return reply{parts: []string{title + ": nothing found."}}
+		return reply{parts: []string{tr.t("list.empty", escape(title))}}
 	}
 	lines := make([]string, 0, len(emails))
 	rows := make([][]inlineButton, 0, len(emails))
 	for i, email := range emails {
-		lines = append(lines, fmt.Sprintf("%d. %s — %s (%s)", i+1, formatAddress(email.From), email.Subject, b.formatTime(ctx, email.ReceivedAt)))
+		lines = append(lines, tr.t("list.mailLine", i+1, formatAddress(email.From), email.Subject, b.formatTime(ctx, tr, email.ReceivedAt)))
 		rows = append(rows, []inlineButton{{
-			Text:         fmt.Sprintf("Mail %d", i+1),
+			Text:         tr.t("mail.button", i+1),
 			CallbackData: callbackData(cbEmail, email.InternalEmailID),
 		}})
 	}
@@ -309,27 +285,28 @@ func (b *Bot) renderEmails(ctx context.Context, title string, emails []core.Norm
 }
 
 func (b *Bot) commandInvoices(ctx context.Context, args []string) (reply, error) {
+	tr := b.tr(ctx)
 	filter := core.InvoiceFilter{Limit: listLimit}
-	title := "Invoices"
+	title := tr.t("invoices.title")
 	overdueOnly := false
 	if len(args) > 0 {
 		switch strings.ToLower(args[0]) {
 		case "pending":
 			filter.Status = core.PendingConfirmation
-			title = "Pending invoices"
+			title = tr.t("invoices.pending")
 		case "paid":
 			filter.Status = core.PaidConfirmed
-			title = "Paid invoices"
+			title = tr.t("invoices.paid")
 		case "review":
 			filter.Status = core.ReviewRequired
-			title = "Invoices needing review"
+			title = tr.t("invoices.review")
 		case "overdue":
 			filter.Status = core.PendingConfirmation
-			title = "Overdue invoices"
+			title = tr.t("invoices.overdue")
 			overdueOnly = true
 		case "all", "":
 		default:
-			return reply{parts: []string{"Usage: /invoices [pending|paid|overdue|review]"}}, nil
+			return reply{parts: []string{tr.t("invoices.usage")}}, nil
 		}
 	}
 	invoices, err := b.store.ListInvoices(ctx, filter)
@@ -347,14 +324,14 @@ func (b *Bot) commandInvoices(ctx context.Context, args []string) (reply, error)
 		invoices = kept
 	}
 	if len(invoices) == 0 {
-		return reply{parts: []string{title + ": nothing found."}}, nil
+		return reply{parts: []string{tr.t("list.empty", escape(title))}}, nil
 	}
 	lines := make([]string, 0, len(invoices))
 	rows := make([][]inlineButton, 0, len(invoices))
 	for i, inv := range invoices {
-		lines = append(lines, fmt.Sprintf("%d. %s %s due %s (%s)", i+1, inv.Number, core.FormatMoney(inv.AmountDue), inv.DueDate, inv.Status))
+		lines = append(lines, tr.t("invoices.line", i+1, inv.Number, core.FormatMoney(inv.AmountDue), string(inv.DueDate), tr.invoiceStatus(inv.Status)))
 		rows = append(rows, []inlineButton{{
-			Text:         fmt.Sprintf("Invoice %d", i+1),
+			Text:         tr.t("invoices.button", i+1),
 			CallbackData: callbackData(cbInvoice, inv.ID),
 		}})
 	}
@@ -362,6 +339,7 @@ func (b *Bot) commandInvoices(ctx context.Context, args []string) (reply, error)
 }
 
 func (b *Bot) commandAssets(ctx context.Context, args []string) (reply, error) {
+	tr := b.tr(ctx)
 	filter := core.AssetFilter{Limit: listLimit}
 	if len(args) > 0 {
 		filter.ProviderID = strings.ToLower(args[0])
@@ -371,45 +349,50 @@ func (b *Bot) commandAssets(ctx context.Context, args []string) (reply, error) {
 		return reply{}, fmt.Errorf("list assets: %w", err)
 	}
 	if len(assets) == 0 {
-		return reply{parts: []string{"Assets: nothing found."}}, nil
+		return reply{parts: []string{tr.t("assets.empty")}}, nil
 	}
 	lines := make([]string, 0, len(assets))
 	rows := make([][]inlineButton, 0, len(assets))
 	for i, asset := range assets {
 		label := firstNonEmpty(ptrText(asset.Hostname), ptrText(asset.ProductModel), ptrText(asset.ProductID), asset.ID)
-		lines = append(lines, fmt.Sprintf("%d. %s (%s)", i+1, label, asset.ProviderID))
+		if label == "" {
+			label = tr.t("common.unknown")
+		}
+		lines = append(lines, tr.t("assets.line", i+1, label, asset.ProviderID))
 		rows = append(rows, []inlineButton{{
-			Text:         fmt.Sprintf("History %d", i+1),
+			Text:         tr.t("assets.historyButton", i+1),
 			CallbackData: callbackData(cbAssetHistory, asset.ID),
 		}})
 	}
-	return renderList("Assets", lines, &inlineKeyboard{InlineKeyboard: rows}), nil
+	return renderList(tr.t("assets.title"), lines, &inlineKeyboard{InlineKeyboard: rows}), nil
 }
 
 func (b *Bot) commandProviders(ctx context.Context) (reply, error) {
-	lines := []string{"Sources: microsoft, qq"}
+	tr := b.tr(ctx)
+	lines := []string{tr.t("providers.sources")}
 	if b.parsers != nil {
 		parsers := b.parsers.Parsers()
 		sort.Slice(parsers, func(i, j int) bool { return parsers[i].Vendor < parsers[j].Vendor })
 		for _, p := range parsers {
-			lines = append(lines, fmt.Sprintf("Parser: %s v%s", p.Vendor, p.Version))
+			lines = append(lines, tr.t("providers.parser", p.Vendor, p.Version))
 		}
 	}
-	return renderList("Providers", lines, nil), nil
+	return renderList(tr.t("providers.title"), lines, nil), nil
 }
 
 func (b *Bot) commandStatus(ctx context.Context) (reply, error) {
+	tr := b.tr(ctx)
 	status, err := b.store.Status(ctx)
 	if err != nil {
 		return reply{}, fmt.Errorf("system status: %w", err)
 	}
 	lines := []string{
-		fmt.Sprintf("Accounts: %d", status.Accounts),
-		fmt.Sprintf("Emails: %d", status.Emails),
-		fmt.Sprintf("Pending invoices: %d", status.PendingInvoices),
-		fmt.Sprintf("Pending deliveries: %d", status.PendingDeliveries),
+		tr.t("status.accounts", status.Accounts),
+		tr.t("status.emails", status.Emails),
+		tr.t("status.pendingInvoices", status.PendingInvoices),
+		tr.t("status.pendingDeliveries", status.PendingDeliveries),
 	}
-	return renderList("Status", lines, nil), nil
+	return renderList(tr.t("status.title"), lines, nil), nil
 }
 
 func renderList(title string, lines []string, keyboard *inlineKeyboard) reply {
@@ -438,9 +421,9 @@ func (b *Bot) location(ctx context.Context) *time.Location {
 	return defaultDisplayLocation()
 }
 
-func (b *Bot) formatTime(ctx context.Context, t time.Time) string {
+func (b *Bot) formatTime(ctx context.Context, tr translator, t time.Time) string {
 	if t.IsZero() {
-		return "unknown"
+		return tr.t("common.unknown")
 	}
 	return t.In(b.location(ctx)).Format(displayTimeLayout)
 }
@@ -452,13 +435,14 @@ func ptrText(s *string) string {
 	return *s
 }
 
+// firstNonEmpty returns the first non-blank value, or "" when none is set.
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {
 			return v
 		}
 	}
-	return "unknown"
+	return ""
 }
 
 func parsePositiveSeconds(raw string) (int, error) {

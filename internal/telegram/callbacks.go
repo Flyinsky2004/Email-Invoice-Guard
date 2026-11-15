@@ -3,7 +3,6 @@ package telegram
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"email-invoice-guard/internal/core"
@@ -14,19 +13,21 @@ func (b *Bot) handleCallback(ctx context.Context, cq *callbackQuery) {
 		return
 	}
 	// Every callback is answered, including denied ones, so Telegram does not
-	// leave a spinner on the client.
+	// leave a spinner on the client. Authorization is checked before any other
+	// work, exactly as before.
 	if !b.authorizedCallback(cq) {
-		b.answerCallback(ctx, cq.ID, "Not authorized", true)
+		b.answerCallback(ctx, cq.ID, b.text(ctx, "error.unauthorized"), true)
 		b.log.Warn("telegram: rejected callback from unauthorized sender", "user_id", cq.From.ID)
 		return
 	}
+	tr := b.tr(ctx)
 	action, id, ok := parseCallbackData(cq.Data)
 	if !ok {
 		if waction, wid, value, wok := parseWizardCallback(cq.Data); wok {
 			b.handleWizardCallback(ctx, cq, waction, wid, value)
 			return
 		}
-		b.answerCallback(ctx, cq.ID, "Unknown action", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.unknownAction"), false)
 		return
 	}
 	switch action {
@@ -57,7 +58,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *callbackQuery) {
 	case cbManualHistory:
 		b.callbackManualHistory(ctx, cq, id)
 	default:
-		b.answerCallback(ctx, cq.ID, "Unknown action", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.unknownAction"), false)
 	}
 }
 
@@ -84,175 +85,182 @@ func (b *Bot) editOrSend(ctx context.Context, cq *callbackQuery, text string, ma
 }
 
 func (b *Bot) callbackPaidPrompt(ctx context.Context, cq *callbackQuery, invoiceID string) {
+	tr := b.tr(ctx)
 	inv, err := b.store.GetInvoice(ctx, invoiceID)
 	if err != nil {
-		b.answerCallback(ctx, cq.ID, "Invoice not found", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.invoiceNotFound"), false)
 		return
 	}
 	if inv.Status != core.PendingConfirmation {
-		b.answerCallback(ctx, cq.ID, "Invoice is not pending confirmation", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.invoiceNotPending"), false)
 		return
 	}
-	text := "Confirm manual payment for invoice " + escape(inv.Number) +
-		" (" + escape(core.FormatMoney(inv.AmountDue)) + ")?\n" +
-		"Only press Confirm if you have actually paid this invoice."
+	text := tr.t("callback.paidPrompt", escape(inv.Number), escape(core.FormatMoney(inv.AmountDue)))
 	markup := &inlineKeyboard{InlineKeyboard: [][]inlineButton{
-		{{Text: "Confirm paid", CallbackData: callbackData(cbPaidConfirm, inv.ID)}},
+		{{Text: tr.t("callback.confirmPaid"), CallbackData: callbackData(cbPaidConfirm, inv.ID)}},
 		{
-			{Text: "Undo", CallbackData: callbackData(cbPaidUndo, inv.ID)},
-			{Text: "Cancel", CallbackData: callbackData(cbPaidCancel, inv.ID)},
+			{Text: tr.t("callback.undo"), CallbackData: callbackData(cbPaidUndo, inv.ID)},
+			{Text: tr.t("callback.cancel"), CallbackData: callbackData(cbPaidCancel, inv.ID)},
 		},
 	}}
-	b.answerCallback(ctx, cq.ID, "Confirm payment", false)
+	b.answerCallback(ctx, cq.ID, tr.t("callback.confirmPayment"), false)
 	b.editOrSend(ctx, cq, text, markup)
 }
 
 func (b *Bot) callbackPaidConfirm(ctx context.Context, cq *callbackQuery, invoiceID string) {
+	tr := b.tr(ctx)
 	inv, err := b.store.GetInvoice(ctx, invoiceID)
 	if err != nil {
-		b.answerCallback(ctx, cq.ID, "Invoice not found", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.invoiceNotFound"), false)
 		return
 	}
 	if inv.Status == core.PaidConfirmed {
-		b.answerCallback(ctx, cq.ID, "Already marked as paid", false)
+		b.answerCallback(ctx, cq.ID, tr.t("callback.alreadyPaid"), false)
 		b.updateInvoiceMessages(ctx, inv)
 		return
 	}
 	updated, err := b.payment.Confirm(ctx, invoiceID, cq.From.ID)
 	if err != nil {
-		b.answerCallback(ctx, cq.ID, paymentErrorText(err), true)
+		b.answerCallback(ctx, cq.ID, paymentErrorText(tr, err), true)
 		return
 	}
-	b.answerCallback(ctx, cq.ID, "Marked as paid", false)
+	b.answerCallback(ctx, cq.ID, tr.t("callback.markedPaid"), false)
 	b.updateInvoiceMessages(ctx, updated)
 }
 
 func (b *Bot) callbackPaidUndo(ctx context.Context, cq *callbackQuery, invoiceID string) {
+	tr := b.tr(ctx)
 	inv, err := b.store.GetInvoice(ctx, invoiceID)
 	if err != nil {
-		b.answerCallback(ctx, cq.ID, "Invoice not found", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.invoiceNotFound"), false)
 		return
 	}
 	if inv.Status == core.PendingConfirmation {
-		b.answerCallback(ctx, cq.ID, "Already pending", false)
+		b.answerCallback(ctx, cq.ID, tr.t("callback.alreadyPending"), false)
 		b.updateInvoiceMessages(ctx, inv)
 		return
 	}
 	updated, err := b.payment.Undo(ctx, invoiceID, cq.From.ID)
 	if err != nil {
-		b.answerCallback(ctx, cq.ID, paymentErrorText(err), true)
+		b.answerCallback(ctx, cq.ID, paymentErrorText(tr, err), true)
 		return
 	}
-	b.answerCallback(ctx, cq.ID, "Restored to pending", false)
+	b.answerCallback(ctx, cq.ID, tr.t("callback.restoredPending"), false)
 	b.updateInvoiceMessages(ctx, updated)
 }
 
 func (b *Bot) callbackPaidCancel(ctx context.Context, cq *callbackQuery, invoiceID string) {
+	tr := b.tr(ctx)
 	updated, err := b.payment.Cancel(ctx, invoiceID, cq.From.ID)
 	if err != nil {
-		b.answerCallback(ctx, cq.ID, paymentErrorText(err), true)
+		b.answerCallback(ctx, cq.ID, paymentErrorText(tr, err), true)
 		return
 	}
-	b.answerCallback(ctx, cq.ID, "Invoice cancelled", false)
+	b.answerCallback(ctx, cq.ID, tr.t("callback.invoiceCancelled"), false)
 	b.updateInvoiceMessages(ctx, updated)
 }
 
-func paymentErrorText(err error) string {
+func paymentErrorText(tr translator, err error) string {
 	switch {
 	case errors.Is(err, core.ErrUnauthorized):
-		return "Not authorized"
+		return tr.t("error.unauthorized")
 	case errors.Is(err, core.ErrConflict):
-		return "Cannot change this invoice in its current state"
+		return tr.t("error.invoiceConflict")
 	case errors.Is(err, core.ErrNotFound):
-		return "Invoice not found"
+		return tr.t("error.invoiceNotFound")
 	default:
-		return "Payment update failed"
+		return tr.t("error.paymentUpdate")
 	}
 }
 
 func (b *Bot) callbackEmail(ctx context.Context, cq *callbackQuery, emailID string) {
+	tr := b.tr(ctx)
 	email, err := b.store.GetEmail(ctx, emailID)
 	if err != nil {
-		b.answerCallback(ctx, cq.ID, "Mail not found", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.mailNotFound"), false)
 		return
 	}
 	account, err := b.store.GetAccount(ctx, email.AccountID)
 	if err != nil {
 		account = core.MailAccount{ID: email.AccountID, Provider: email.ProviderType}
 	}
-	parts := formatEmailAt(email, account, b.location(ctx))
-	b.answerCallback(ctx, cq.ID, "Opening mail", false)
+	parts := formatEmailAtLang(email, account, b.location(ctx), tr)
+	b.answerCallback(ctx, cq.ID, tr.t("callback.openingMail"), false)
 	if err := b.sendParts(ctx, cq.Message.Chat.ID, parts, nil); err != nil {
 		b.log.Warn("telegram: send mail failed", "error", err.Error())
 	}
 }
 
 func (b *Bot) callbackInvoice(ctx context.Context, cq *callbackQuery, invoiceID string) {
+	tr := b.tr(ctx)
 	inv, err := b.store.GetInvoice(ctx, invoiceID)
 	if err != nil {
-		b.answerCallback(ctx, cq.ID, "Invoice not found", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.invoiceNotFound"), false)
 		return
 	}
 	account, err := b.store.GetAccount(ctx, inv.AccountID)
 	if err != nil {
 		account = core.MailAccount{ID: inv.AccountID, Provider: core.Microsoft}
 	}
-	parts := formatInvoiceAt(inv, account, b.location(ctx))
-	b.answerCallback(ctx, cq.ID, "Opening invoice", false)
-	if err := b.sendParts(ctx, cq.Message.Chat.ID, parts, b.invoiceKeyboard(inv)); err != nil {
+	parts := formatInvoiceAtLang(inv, account, b.location(ctx), tr)
+	b.answerCallback(ctx, cq.ID, tr.t("callback.openingInvoice"), false)
+	if err := b.sendParts(ctx, cq.Message.Chat.ID, parts, b.invoiceKeyboardLang(tr, inv)); err != nil {
 		b.log.Warn("telegram: send invoice failed", "error", err.Error())
 	}
 }
 
 func (b *Bot) callbackAssetHistory(ctx context.Context, cq *callbackQuery, assetID string) {
+	tr := b.tr(ctx)
 	invoices, err := b.store.AssetInvoices(ctx, assetID)
 	if err != nil {
-		b.answerCallback(ctx, cq.ID, "Asset not found", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.assetNotFound"), false)
 		return
 	}
 	if len(invoices) == 0 {
-		b.answerCallback(ctx, cq.ID, "No invoice history", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.noInvoiceHistory"), false)
 		return
 	}
 	lines := make([]string, 0, len(invoices))
 	rows := make([][]inlineButton, 0, len(invoices))
 	for i, inv := range invoices {
-		lines = append(lines, fmt.Sprintf("%d. %s %s due %s (%s)", i+1, inv.Number, core.FormatMoney(inv.AmountDue), inv.DueDate, inv.Status))
+		lines = append(lines, tr.t("invoices.line", i+1, inv.Number, core.FormatMoney(inv.AmountDue), string(inv.DueDate), tr.invoiceStatus(inv.Status)))
 		rows = append(rows, []inlineButton{{
-			Text:         fmt.Sprintf("Invoice %d", i+1),
+			Text:         tr.t("invoices.button", i+1),
 			CallbackData: callbackData(cbInvoice, inv.ID),
 		}})
 	}
-	b.answerCallback(ctx, cq.ID, "Asset history", false)
-	rep := renderList("Asset invoice history", lines, &inlineKeyboard{InlineKeyboard: rows})
+	b.answerCallback(ctx, cq.ID, tr.t("callback.assetHistory"), false)
+	rep := renderList(tr.t("callback.assetHistoryTitle"), lines, &inlineKeyboard{InlineKeyboard: rows})
 	if err := b.sendParts(ctx, cq.Message.Chat.ID, rep.parts, rep.keyboard); err != nil {
 		b.log.Warn("telegram: send asset history failed", "error", err.Error())
 	}
 }
 
 func (b *Bot) callbackRemoveAccount(ctx context.Context, cq *callbackQuery, accountID string) {
+	tr := b.tr(ctx)
 	account, err := b.store.GetAccount(ctx, accountID)
 	if err != nil {
-		b.answerCallback(ctx, cq.ID, "Account not found", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.accountNotFound"), false)
 		return
 	}
 	if account.OwnerUserID != cq.From.ID {
-		b.answerCallback(ctx, cq.ID, "Not authorized", true)
+		b.answerCallback(ctx, cq.ID, tr.t("error.unauthorized"), true)
 		return
 	}
 	if err := b.store.RemoveAccount(ctx, accountID); err != nil {
-		b.answerCallback(ctx, cq.ID, "Removal failed", true)
+		b.answerCallback(ctx, cq.ID, tr.t("error.removalFailed"), true)
 		b.log.Warn("telegram: remove account failed", "error", err.Error())
 		return
 	}
-	b.answerCallback(ctx, cq.ID, "Account disabled", false)
-	b.sendText(ctx, cq.Message.Chat.ID, "Account disabled: "+escape(account.Address), nil)
+	b.answerCallback(ctx, cq.ID, tr.t("remove.disabledShort"), false)
+	b.sendText(ctx, cq.Message.Chat.ID, tr.t("remove.disabled", escape(account.Address)), nil)
 }
 
 // updateInvoiceMessages refreshes every stored Telegram message for an invoice
 // after a manual status change. Edit failures are transient and never roll back
 // the already-committed payment state.
 func (b *Bot) updateInvoiceMessages(ctx context.Context, inv core.Invoice) {
+	tr := b.tr(ctx)
 	messages, err := b.store.ListTelegramMessages(ctx, inv.ID)
 	if err != nil {
 		b.log.Warn("telegram: list invoice messages failed", "invoice", inv.ID, "error", err.Error())
@@ -265,8 +273,8 @@ func (b *Bot) updateInvoiceMessages(ctx context.Context, inv core.Invoice) {
 	if err != nil {
 		account = core.MailAccount{ID: inv.AccountID}
 	}
-	parts := formatInvoiceAt(inv, account, b.location(ctx))
-	markup := b.invoiceKeyboard(inv)
+	parts := formatInvoiceAtLang(inv, account, b.location(ctx), tr)
+	markup := b.invoiceKeyboardLang(tr, inv)
 	for _, msg := range messages {
 		text := parts[0]
 		if msg.Part >= 0 && msg.Part < len(parts) {

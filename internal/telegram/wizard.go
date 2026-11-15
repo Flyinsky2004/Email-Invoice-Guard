@@ -107,6 +107,7 @@ func (b *Bot) defaultWizardTimezone() string {
 // startWizard creates or replaces the active wizard for this user and chat.
 // An edit wizard loads the plan first and opens on the confirmation step.
 func (b *Bot) startWizard(ctx context.Context, userID, chatID int64, planID string) (reply, error) {
+	tr := b.tr(ctx)
 	st := &wizardState{
 		ID:           core.NewID(),
 		ChatID:       chatID,
@@ -121,7 +122,7 @@ func (b *Bot) startWizard(ctx context.Context, userID, chatID int64, planID stri
 	if planID != "" {
 		plan, err := b.manual.GetPlan(ctx, planID)
 		if err != nil {
-			return b.manualReadReply("get manual plan", err)
+			return b.manualReadReply(tr, "get manual plan", err)
 		}
 		st.prefill(plan)
 		st.Step = wzStepConfirm
@@ -129,7 +130,7 @@ func (b *Bot) startWizard(ctx context.Context, userID, chatID int64, planID stri
 	b.wizardMu.Lock()
 	b.wizards[wizardKey(chatID, userID)] = st
 	b.wizardMu.Unlock()
-	return b.wizardPrompt(st, ""), nil
+	return b.wizardPrompt(tr, st, ""), nil
 }
 
 func (st *wizardState) prefill(plan core.ManualPlan) {
@@ -167,7 +168,7 @@ func (b *Bot) wizardInput(ctx context.Context, m *message) (reply, bool) {
 	if b.wizardNow().After(st.ExpiresAt) {
 		delete(b.wizards, key)
 		b.wizardMu.Unlock()
-		return reply{parts: []string{"Wizard expired. Start again with /reminder_add."}}, true
+		return reply{parts: []string{b.text(ctx, "wizard.expired")}}, true
 	}
 	rep := b.wizardApplyText(ctx, st, strings.TrimSpace(m.Text))
 	st.ExpiresAt = b.wizardNow().Add(b.wizardTTL())
@@ -178,16 +179,17 @@ func (b *Bot) wizardInput(ctx context.Context, m *message) (reply, bool) {
 // wizardApplyText validates one text answer, stores it and returns the next
 // prompt. A validation failure keeps the current step.
 func (b *Bot) wizardApplyText(ctx context.Context, st *wizardState, text string) reply {
+	tr := b.tr(ctx)
 	switch st.Step {
 	case wzStepTitle:
 		if text == "" || utf8.RuneCountInString(text) > manualMaxTitle {
-			return b.wizardPrompt(st, "Title must be 1-200 characters.")
+			return b.wizardPrompt(tr, st, tr.t("wizard.err.title"))
 		}
 		st.Title = text
 		st.Step = wzStepPeriod
 	case wzStepPeriod:
 		if !strings.EqualFold(text, "monthly") {
-			return b.wizardPrompt(st, "Select Monthly to continue; v1 supports monthly plans only.")
+			return b.wizardPrompt(tr, st, tr.t("wizard.err.period"))
 		}
 		st.Period = "monthly"
 		st.Step = wzStepProvider
@@ -196,7 +198,7 @@ func (b *Bot) wizardApplyText(ctx context.Context, st *wizardState, text string)
 			text = ""
 		}
 		if utf8.RuneCountInString(text) > manualMaxProvider {
-			return b.wizardPrompt(st, "Provider name must be at most 100 characters.")
+			return b.wizardPrompt(tr, st, tr.t("wizard.err.provider"))
 		}
 		st.ProviderName = text
 		st.Step = wzStepAmount
@@ -213,7 +215,7 @@ func (b *Bot) wizardApplyText(ctx context.Context, st *wizardState, text string)
 		switch len(fields) {
 		case 1:
 			if !validAmountDigits(fields[0]) {
-				return b.wizardPrompt(st, "Send an amount like 18.00 USD, or - for no fixed amount.")
+				return b.wizardPrompt(tr, st, tr.t("wizard.err.amount"))
 			}
 			st.pendingAmount = fields[0]
 			st.Step = wzStepCurrency
@@ -221,7 +223,7 @@ func (b *Bot) wizardApplyText(ctx context.Context, st *wizardState, text string)
 			currency := strings.ToUpper(fields[1])
 			money, err := core.ParseMoney(fields[0], currency)
 			if err != nil || money.Minor < 0 {
-				return b.wizardPrompt(st, "Invalid amount or unsupported currency.")
+				return b.wizardPrompt(tr, st, tr.t("wizard.err.amountInvalid"))
 			}
 			st.HasAmount = true
 			st.AmountMinor = money.Minor
@@ -229,28 +231,28 @@ func (b *Bot) wizardApplyText(ctx context.Context, st *wizardState, text string)
 			st.pendingAmount = ""
 			st.Step = wzStepBillingDay
 		default:
-			return b.wizardPrompt(st, "Send an amount like 18.00 USD, or - for no fixed amount.")
+			return b.wizardPrompt(tr, st, tr.t("wizard.err.amount"))
 		}
 	case wzStepCurrency:
 		currency := strings.ToUpper(strings.TrimSpace(text))
 		if _, ok := core.CurrencyDecimals(currency); !ok {
-			return b.wizardPrompt(st, "Unsupported currency. Select one of the buttons.")
+			return b.wizardPrompt(tr, st, tr.t("wizard.err.currency"))
 		}
-		return b.applyWizardCurrency(st, currency)
+		return b.applyWizardCurrency(tr, st, currency)
 	case wzStepBillingDay:
 		day, ok := parseBillingDay(text)
 		if !ok {
-			return b.wizardPrompt(st, "Billing day must be a number from 1 to 31.")
+			return b.wizardPrompt(tr, st, tr.t("wizard.err.billingDay"))
 		}
 		st.BillingDay = day
 		st.Step = wzStepAsset
-		b.prepareAssetStep(ctx, st)
+		b.prepareAssetStep(ctx, tr, st)
 	case wzStepAsset:
-		return b.wizardPrompt(st, "Select an asset or Skip.")
+		return b.wizardPrompt(tr, st, tr.t("wizard.err.asset"))
 	case wzStepReminderTime:
 		if text != "-" {
 			if !validReminderTime(text) {
-				return b.wizardPrompt(st, "Reminder time must be HH:MM in 24-hour form.")
+				return b.wizardPrompt(tr, st, tr.t("wizard.err.reminderTime"))
 			}
 			st.ReminderTime = text
 		}
@@ -258,7 +260,7 @@ func (b *Bot) wizardApplyText(ctx context.Context, st *wizardState, text string)
 	case wzStepTimezone:
 		if text != "-" {
 			if _, err := time.LoadLocation(text); err != nil {
-				return b.wizardPrompt(st, "Invalid timezone. Use an IANA name such as Asia/Taipei.")
+				return b.wizardPrompt(tr, st, tr.t("wizard.err.timezone"))
 			}
 			st.Timezone = text
 		}
@@ -270,7 +272,7 @@ func (b *Bot) wizardApplyText(ctx context.Context, st *wizardState, text string)
 			break
 		}
 		if utf8.RuneCountInString(text) > manualMaxURL || !trustedHTTPSURL(text) {
-			return b.wizardPrompt(st, "Payment URL must be an https URL without credentials, a non-443 port or a fragment.")
+			return b.wizardPrompt(tr, st, tr.t("wizard.err.paymentURL"))
 		}
 		st.PaymentURL = text
 		st.Step = wzStepNotes
@@ -279,49 +281,49 @@ func (b *Bot) wizardApplyText(ctx context.Context, st *wizardState, text string)
 			text = ""
 		}
 		if utf8.RuneCountInString(text) > manualMaxNotes {
-			return b.wizardPrompt(st, "Notes must be at most 2000 characters.")
+			return b.wizardPrompt(tr, st, tr.t("wizard.err.notes"))
 		}
 		st.Notes = text
 		st.Step = wzStepConfirm
 	case wzStepConfirm:
-		return b.wizardPrompt(st, "Press Confirm, Back or Cancel.")
+		return b.wizardPrompt(tr, st, tr.t("wizard.err.confirm"))
 	}
-	return b.wizardPrompt(st, "")
+	return b.wizardPrompt(tr, st, "")
 }
 
 // applyWizardCurrency completes the amount step after a currency selection.
-func (b *Bot) applyWizardCurrency(st *wizardState, currency string) reply {
+func (b *Bot) applyWizardCurrency(tr translator, st *wizardState, currency string) reply {
 	if st.pendingAmount == "" {
 		st.Step = wzStepAmount
-		return b.wizardPrompt(st, "Send an amount first.")
+		return b.wizardPrompt(tr, st, tr.t("wizard.err.sendAmountFirst"))
 	}
 	money, err := core.ParseMoney(st.pendingAmount, currency)
 	if err != nil || money.Minor < 0 {
 		st.Step = wzStepAmount
-		return b.wizardPrompt(st, "Invalid amount for "+currency+".")
+		return b.wizardPrompt(tr, st, tr.t("wizard.err.amountForCurrency", currency))
 	}
 	st.HasAmount = true
 	st.AmountMinor = money.Minor
 	st.Currency = currency
 	st.pendingAmount = ""
 	st.Step = wzStepBillingDay
-	return b.wizardPrompt(st, "")
+	return b.wizardPrompt(tr, st, "")
 }
 
 // prepareAssetStep loads assets for the asset step. A read failure is shown to
 // the user and only Skip is offered, so the wizard never hides the problem.
-func (b *Bot) prepareAssetStep(ctx context.Context, st *wizardState) {
+func (b *Bot) prepareAssetStep(ctx context.Context, tr translator, st *wizardState) {
 	st.AssetOptions = make(map[string]string)
 	st.AssetLabels = make(map[string]string)
 	st.AssetTokens = nil
 	st.AssetNote = ""
 	if b.store == nil {
-		st.AssetNote = "Assets are unavailable; press Skip."
+		st.AssetNote = tr.t("wizard.assetUnavailable")
 		return
 	}
 	assets, err := b.store.ListAssets(ctx, core.AssetFilter{Limit: 0})
 	if err != nil {
-		st.AssetNote = "Could not load assets; press Skip."
+		st.AssetNote = tr.t("wizard.assetLoadError")
 		b.log.Warn("telegram: list assets for wizard failed", "error", err.Error())
 		return
 	}
@@ -331,15 +333,19 @@ func (b *Bot) prepareAssetStep(ctx context.Context, st *wizardState) {
 		}
 		token := fmt.Sprintf("a%d", i+1)
 		st.AssetOptions[token] = asset.ID
-		st.AssetLabels[token] = firstNonEmpty(ptrText(asset.Hostname), ptrText(asset.ProductModel), ptrText(asset.ProductID), asset.ID)
+		label := firstNonEmpty(ptrText(asset.Hostname), ptrText(asset.ProductModel), ptrText(asset.ProductID), asset.ID)
+		if label == "" {
+			label = tr.t("common.unknown")
+		}
+		st.AssetLabels[token] = label
 		st.AssetTokens = append(st.AssetTokens, token)
 	}
 }
 
 // prepareWizardStep refreshes step-specific data after navigation.
-func (b *Bot) prepareWizardStep(ctx context.Context, st *wizardState) {
+func (b *Bot) prepareWizardStep(ctx context.Context, tr translator, st *wizardState) {
 	if st.Step == wzStepAsset {
-		b.prepareAssetStep(ctx, st)
+		b.prepareAssetStep(ctx, tr, st)
 	}
 }
 
@@ -392,60 +398,60 @@ func previousWizardStep(st *wizardState) wizardStep {
 }
 
 // wizardPrompt renders the current step, optionally prefixed with an error.
-func (b *Bot) wizardPrompt(st *wizardState, errMsg string) reply {
+func (b *Bot) wizardPrompt(tr translator, st *wizardState, errMsg string) reply {
 	if st.Step == wzStepConfirm {
-		parts := formatManualPreviewAt(st)
+		parts := formatManualPreviewAt(st, tr)
 		if errMsg != "" {
 			parts[0] = escape(errMsg) + "\n" + parts[0]
 		}
-		return reply{parts: parts, keyboard: b.wizardConfirmKeyboard(st)}
+		return reply{parts: parts, keyboard: b.wizardConfirmKeyboard(tr, st)}
 	}
-	text := wizardStepText(st)
+	text := wizardStepText(tr, st)
 	if errMsg != "" {
 		text = escape(errMsg) + "\n" + text
 	}
-	return reply{parts: []string{text}, keyboard: b.wizardKeyboard(st)}
+	return reply{parts: []string{text}, keyboard: b.wizardKeyboard(tr, st)}
 }
 
-func wizardStepText(st *wizardState) string {
+func wizardStepText(tr translator, st *wizardState) string {
 	switch st.Step {
 	case wzStepTitle:
-		return "Step 1/10 — send the plan title."
+		return tr.t("wizard.step.title")
 	case wzStepPeriod:
-		return "Step 2/10 — select the billing period. v1 supports monthly plans only."
+		return tr.t("wizard.step.period")
 	case wzStepProvider:
-		return "Step 3/10 — send the provider name, or - to skip."
+		return tr.t("wizard.step.provider")
 	case wzStepAmount:
-		return "Step 4/10 — send the amount like 18.00 USD, or - for no fixed amount."
+		return tr.t("wizard.step.amount")
 	case wzStepCurrency:
-		return "Step 4/10 — select the currency for " + escape(st.pendingAmount) + "."
+		return tr.t("wizard.step.currency", escape(st.pendingAmount))
 	case wzStepBillingDay:
-		return "Step 5/10 — send the billing day (1-31)."
+		return tr.t("wizard.step.billingDay")
 	case wzStepAsset:
-		text := "Step 6/10 — select an asset to link, or Skip."
+		text := tr.t("wizard.step.asset")
 		if st.AssetNote != "" {
 			text = escape(st.AssetNote) + "\n" + text
 		}
 		return text
 	case wzStepReminderTime:
-		return "Step 7/10 — send the reminder time HH:MM (default " + escape(st.ReminderTime) + "), or - to keep it."
+		return tr.t("wizard.step.reminderTime", escape(st.ReminderTime))
 	case wzStepTimezone:
-		return "Step 8/10 — send the IANA timezone (default " + escape(st.Timezone) + "), or - to keep it."
+		return tr.t("wizard.step.timezone", escape(st.Timezone))
 	case wzStepPaymentURL:
-		return "Step 9/10 — send an https payment URL, or - to skip."
+		return tr.t("wizard.step.paymentURL")
 	case wzStepNotes:
-		return "Step 10/10 — send notes, or - to skip."
+		return tr.t("wizard.step.notes")
 	default:
-		return "Review the plan."
+		return tr.t("wizard.step.review")
 	}
 }
 
-func (b *Bot) wizardKeyboard(st *wizardState) *inlineKeyboard {
+func (b *Bot) wizardKeyboard(tr translator, st *wizardState) *inlineKeyboard {
 	rows := make([][]inlineButton, 0, 4)
 	switch st.Step {
 	case wzStepPeriod:
 		rows = append(rows, []inlineButton{{
-			Text:         "Monthly (v1 only)",
+			Text:         tr.t("wizard.button.monthly"),
 			CallbackData: callbackData(cbWizardValue, st.ID) + ":monthly",
 		}})
 	case wzStepCurrency:
@@ -472,31 +478,31 @@ func (b *Bot) wizardKeyboard(st *wizardState) *inlineKeyboard {
 			}})
 		}
 		rows = append(rows, []inlineButton{{
-			Text:         "Skip",
+			Text:         tr.t("wizard.button.skip"),
 			CallbackData: callbackData(cbWizardValue, st.ID) + ":skip",
 		}})
 	}
 	nav := make([]inlineButton, 0, 2)
 	if st.Step != wzStepTitle {
-		nav = append(nav, inlineButton{Text: "Back", CallbackData: callbackData(cbWizardBack, st.ID)})
+		nav = append(nav, inlineButton{Text: tr.t("wizard.button.back"), CallbackData: callbackData(cbWizardBack, st.ID)})
 	}
-	nav = append(nav, inlineButton{Text: "Cancel", CallbackData: callbackData(cbWizardCancel, st.ID)})
+	nav = append(nav, inlineButton{Text: tr.t("wizard.button.cancel"), CallbackData: callbackData(cbWizardCancel, st.ID)})
 	rows = append(rows, nav)
 	return &inlineKeyboard{InlineKeyboard: rows}
 }
 
-func (b *Bot) wizardConfirmKeyboard(st *wizardState) *inlineKeyboard {
+func (b *Bot) wizardConfirmKeyboard(tr translator, st *wizardState) *inlineKeyboard {
 	return &inlineKeyboard{InlineKeyboard: [][]inlineButton{
-		{{Text: "Confirm", CallbackData: callbackData(cbWizardAdvance, st.ID)}},
+		{{Text: tr.t("wizard.button.confirm"), CallbackData: callbackData(cbWizardAdvance, st.ID)}},
 		{
-			{Text: "Back", CallbackData: callbackData(cbWizardBack, st.ID)},
-			{Text: "Cancel", CallbackData: callbackData(cbWizardCancel, st.ID)},
+			{Text: tr.t("wizard.button.back"), CallbackData: callbackData(cbWizardBack, st.ID)},
+			{Text: tr.t("wizard.button.cancel"), CallbackData: callbackData(cbWizardCancel, st.ID)},
 		},
 	}}
 }
 
 // finishWizard creates or updates the plan from the wizard snapshot.
-func (b *Bot) finishWizard(ctx context.Context, st *wizardState) (reply, error) {
+func (b *Bot) finishWizard(ctx context.Context, tr translator, st *wizardState) (reply, error) {
 	input := core.ManualReminderInput{
 		Title:        st.Title,
 		ProviderName: st.ProviderName,
@@ -516,13 +522,13 @@ func (b *Bot) finishWizard(ctx context.Context, st *wizardState) (reply, error) 
 		if err != nil {
 			return reply{}, err
 		}
-		return reply{parts: []string{"Plan updated: " + escape(plan.Title) + " (id=" + plan.ID + ")"}}, nil
+		return reply{parts: []string{tr.t("wizard.planUpdated", escape(plan.Title), plan.ID)}}, nil
 	}
 	plan, err := b.manual.CreatePlan(ctx, st.UserID, input)
 	if err != nil {
 		return reply{}, err
 	}
-	return reply{parts: []string{"Plan created: " + escape(plan.Title) + " (id=" + plan.ID + ")"}}, nil
+	return reply{parts: []string{tr.t("wizard.planCreated", escape(plan.Title), plan.ID)}}, nil
 }
 
 // dropWizard removes the active wizard and reports whether one existed.
@@ -539,8 +545,9 @@ func (b *Bot) dropWizard(chatID, userID int64) bool {
 
 // handleWizardCallback handles the wz/wx/wb/wv namespace.
 func (b *Bot) handleWizardCallback(ctx context.Context, cq *callbackQuery, action, id, value string) {
+	tr := b.tr(ctx)
 	if b.manual == nil {
-		b.answerCallback(ctx, cq.ID, manualNotConfigured, false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.manualNotConfigured"), false)
 		return
 	}
 	key := wizardKey(cq.Message.Chat.ID, cq.From.ID)
@@ -548,18 +555,18 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cq *callbackQuery, actio
 	st := b.wizards[key]
 	if st == nil {
 		b.wizardMu.Unlock()
-		b.answerCallback(ctx, cq.ID, "Wizard is not active", false)
+		b.answerCallback(ctx, cq.ID, tr.t("wizard.notActive"), false)
 		return
 	}
 	if b.wizardNow().After(st.ExpiresAt) {
 		delete(b.wizards, key)
 		b.wizardMu.Unlock()
-		b.answerCallback(ctx, cq.ID, "Wizard expired", false)
+		b.answerCallback(ctx, cq.ID, tr.t("wizard.expiredShort"), false)
 		return
 	}
 	if st.ID != id {
 		b.wizardMu.Unlock()
-		b.answerCallback(ctx, cq.ID, "This wizard is no longer active", false)
+		b.answerCallback(ctx, cq.ID, tr.t("wizard.noLongerActive"), false)
 		return
 	}
 
@@ -567,18 +574,18 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cq *callbackQuery, actio
 	case cbWizardCancel:
 		delete(b.wizards, key)
 		b.wizardMu.Unlock()
-		b.answerCallback(ctx, cq.ID, "Wizard cancelled", false)
-		b.editOrSend(ctx, cq, "Wizard cancelled.", nil)
+		b.answerCallback(ctx, cq.ID, tr.t("wizard.cancelledShort"), false)
+		b.editOrSend(ctx, cq, tr.t("manual.wizardCancelled"), nil)
 	case cbWizardBack:
 		st.Step = previousWizardStep(st)
-		b.prepareWizardStep(ctx, st)
+		b.prepareWizardStep(ctx, tr, st)
 		st.ExpiresAt = b.wizardNow().Add(b.wizardTTL())
-		rep := b.wizardPrompt(st, "")
+		rep := b.wizardPrompt(tr, st, "")
 		b.wizardMu.Unlock()
-		b.answerCallback(ctx, cq.ID, "Back", false)
+		b.answerCallback(ctx, cq.ID, tr.t("wizard.backShort"), false)
 		b.editReply(ctx, cq, rep)
 	case cbWizardValue:
-		rep, answer, ok := b.applyWizardValue(st, value)
+		rep, answer, ok := b.applyWizardValue(tr, st, value)
 		if !ok {
 			b.wizardMu.Unlock()
 			b.answerCallback(ctx, cq.ID, answer, false)
@@ -591,14 +598,14 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cq *callbackQuery, actio
 	case cbWizardAdvance:
 		if st.Step != wzStepConfirm {
 			b.wizardMu.Unlock()
-			b.answerCallback(ctx, cq.ID, "Use the text prompt to continue", false)
+			b.answerCallback(ctx, cq.ID, tr.t("wizard.useTextPrompt"), false)
 			return
 		}
 		snapshot := *st
 		b.wizardMu.Unlock()
-		rep, err := b.finishWizard(ctx, &snapshot)
+		rep, err := b.finishWizard(ctx, tr, &snapshot)
 		if err != nil {
-			b.answerCallback(ctx, cq.ID, manualErrorText(err), true)
+			b.answerCallback(ctx, cq.ID, manualErrorText(tr, err), true)
 			return
 		}
 		b.wizardMu.Lock()
@@ -606,48 +613,48 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cq *callbackQuery, actio
 			delete(b.wizards, key)
 		}
 		b.wizardMu.Unlock()
-		b.answerCallback(ctx, cq.ID, "Plan saved", false)
+		b.answerCallback(ctx, cq.ID, tr.t("wizard.planSaved"), false)
 		b.editReply(ctx, cq, rep)
 	default:
 		b.wizardMu.Unlock()
-		b.answerCallback(ctx, cq.ID, "Unknown action", false)
+		b.answerCallback(ctx, cq.ID, tr.t("error.unknownAction"), false)
 	}
 }
 
 // applyWizardValue handles a wv selection for the current step. It returns the
 // next prompt, a callback answer and whether the value was valid.
-func (b *Bot) applyWizardValue(st *wizardState, value string) (reply, string, bool) {
+func (b *Bot) applyWizardValue(tr translator, st *wizardState, value string) (reply, string, bool) {
 	switch st.Step {
 	case wzStepPeriod:
 		if !strings.EqualFold(value, "monthly") {
-			return reply{}, "Only monthly is supported", false
+			return reply{}, tr.t("wizard.onlyMonthly"), false
 		}
 		st.Period = "monthly"
 		st.Step = wzStepProvider
-		return b.wizardPrompt(st, ""), "Selected monthly", true
+		return b.wizardPrompt(tr, st, ""), tr.t("wizard.selectedMonthly"), true
 	case wzStepCurrency:
 		currency := strings.ToUpper(value)
 		if _, ok := core.CurrencyDecimals(currency); !ok {
-			return reply{}, "Unsupported currency", false
+			return reply{}, tr.t("wizard.unsupportedCurrency"), false
 		}
-		return b.applyWizardCurrency(st, currency), "Selected " + currency, true
+		return b.applyWizardCurrency(tr, st, currency), tr.t("wizard.selectedCurrency", currency), true
 	case wzStepAsset:
 		if strings.EqualFold(value, "skip") {
 			st.AssetID = ""
 			st.clearAssetOptions()
 			st.Step = wzStepReminderTime
-			return b.wizardPrompt(st, ""), "Asset skipped", true
+			return b.wizardPrompt(tr, st, ""), tr.t("wizard.assetSkipped"), true
 		}
 		assetID, ok := st.AssetOptions[value]
 		if !ok {
-			return reply{}, "Unknown asset", false
+			return reply{}, tr.t("wizard.unknownAsset"), false
 		}
 		st.AssetID = assetID
 		st.clearAssetOptions()
 		st.Step = wzStepReminderTime
-		return b.wizardPrompt(st, ""), "Asset linked", true
+		return b.wizardPrompt(tr, st, ""), tr.t("wizard.assetLinked"), true
 	default:
-		return reply{}, "No value to select here", false
+		return reply{}, tr.t("wizard.noValue"), false
 	}
 }
 
