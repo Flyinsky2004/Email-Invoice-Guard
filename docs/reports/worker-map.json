@@ -115,5 +115,31 @@
     "agent_stopped": true,
     "worktree_removed": true,
     "branch_removed": true
+  },
+  {
+    "task": "T10",
+    "branch": "task/T10-manual-reminder-storage",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t10",
+    "terminal": "t102",
+    "name": "eig-t10",
+    "launched_at": "2026-11-15T15:18:00+00:00",
+    "spec": "docs/tasks/T10.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
+  },
+  {
+    "task": "T11",
+    "branch": "task/T11-manual-reminder-domain",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t11",
+    "terminal": "t103",
+    "name": "eig-t11",
+    "launched_at": "2026-11-15T15:18:00+00:00",
+    "spec": "docs/tasks/T11.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   }
 ]
