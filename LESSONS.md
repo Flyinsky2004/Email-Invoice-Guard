@@ -225,3 +225,9 @@
 - 修复的 commit：c90f9286735c5bd6e30bb6a7f1912a31c769ecc4。
 - Done right: 远程 I/O 在事务外，随后在同一事务读取最新目录偏好并保存描述字段，回归及 race 测试通过。
 - Seen 1× (2026-11-15).
+
+**Compose 文件位于子目录时，`${VAR}` 插值不读取仓库根 `.env`，应改用 `env_file`。**
+- T08 阶段A：`deployments/docker-compose.yml` 使用 `${DOMAIN:?...}`，从仓库根执行 `docker compose config` 时报 `required variable DOMAIN is missing`；Compose 从 compose 文件所在目录（`deployments/`）加载 `.env`，根目录 `.env` 不参与插值。
+- 修复 commit：本次 T08 阶段A 提交（`feat(app-deployment): implement T08 module and tests`）。
+- Done right: app 与 caddy 都声明 `env_file: ../.env`，Caddy 在容器内读取 `{$DOMAIN}`；`docker compose -f deployments/docker-compose.yml config` 无需 `--env-file` 即通过，且 `TRUSTED_PROXY_CIDRS` 与 `backend` 网段一致。
+- Seen 1× (2026-11-15).

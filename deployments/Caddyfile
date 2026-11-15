@@ -1,0 +1,23 @@
+# Caddy terminates TLS and is the only ingress to the application.
+# It forwards to the app over the private "backend" network; the app publishes
+# no ports. The app only honours X-Forwarded-Proto from TRUSTED_PROXY_CIDRS,
+# which must match that backend subnet.
+#
+# Required environment: DOMAIN (e.g. invoice.example.com)
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	reverse_proxy app:8080 {
+		# Caddy already sets X-Forwarded-Proto; keep it explicit for clarity.
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
