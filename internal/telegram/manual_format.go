@@ -69,8 +69,10 @@ func formatManualSummaryAt(plan core.ManualPlan, occurrences []core.ManualOccurr
 	return c.finish()
 }
 
-// formatManualHistoryAt renders the plan event trail and dispatch history.
-func formatManualHistoryAt(plan core.ManualPlan, events []core.ManualReminderEvent, dispatches []core.ManualDispatch, dispatchAvailable bool, loc *time.Location) []string {
+// formatManualHistoryAt renders the plan event trail. Reminder and payment
+// transitions are already recorded as events, so no separate dispatch log is
+// read.
+func formatManualHistoryAt(plan core.ManualPlan, events []core.ManualReminderEvent, loc *time.Location) []string {
 	if loc == nil {
 		loc = defaultDisplayLocation()
 	}
@@ -91,36 +93,6 @@ func formatManualHistoryAt(plan core.ManualPlan, events []core.ManualReminderEve
 			c.writeRaw(line)
 		}
 	}
-	c.writeHTML("──────────")
-	switch {
-	case !dispatchAvailable:
-		c.writeRaw("Dispatches: history unavailable.")
-	case len(dispatches) == 0:
-		c.writeRaw("Dispatches: none.")
-	default:
-		c.writeHTML(fmt.Sprintf("<b>Dispatches (%d)</b>", len(dispatches)))
-		for _, dispatch := range dispatches {
-			c.writeRaw(fmt.Sprintf("• %s %s — %s (id=%s)", dispatch.LocalDate, dispatch.Kind, dispatch.Status, dispatch.ID))
-		}
-	}
-	return c.finish()
-}
-
-// formatManualDispatchAt renders one dispatch detail for the mdc callback.
-func formatManualDispatchAt(dispatch core.ManualDispatch, loc *time.Location) []string {
-	if loc == nil {
-		loc = defaultDisplayLocation()
-	}
-	c := newChunker(chunkBudget)
-	c.writeHTML("<b>Manual dispatch</b>")
-	c.writeRaw("Plan: " + dispatch.PlanID)
-	c.writeRaw("Local date: " + string(dispatch.LocalDate))
-	c.writeRaw("Kind: " + dispatch.Kind)
-	c.writeRaw("Status: " + string(dispatch.Status))
-	c.writeRaw(fmt.Sprintf("Occurrences: %d", len(dispatch.OccurrenceIDs)))
-	if dispatch.SentAt != nil {
-		c.writeRaw("Sent at: " + manualTimeText(*dispatch.SentAt, loc))
-	}
 	return c.finish()
 }
 
@@ -129,6 +101,7 @@ func formatManualPreviewAt(st *wizardState) []string {
 	c := newChunker(chunkBudget)
 	c.writeHTML("<b>Review manual reminder</b>")
 	c.writeRaw("Title: " + st.Title)
+	c.writeRaw("Period: " + firstNonEmpty(st.Period, "monthly"))
 	if st.ProviderName != "" {
 		c.writeRaw("Provider: " + st.ProviderName)
 	}
@@ -138,6 +111,11 @@ func formatManualPreviewAt(st *wizardState) []string {
 		c.writeRaw("Amount: not fixed")
 	}
 	c.writeRaw(fmt.Sprintf("Billing day: %d", st.BillingDay))
+	if st.AssetID != "" {
+		c.writeRaw("Asset: " + st.AssetID)
+	} else {
+		c.writeRaw("Asset: none")
+	}
 	c.writeRaw("Reminder: " + st.ReminderTime + " (" + st.Timezone + ")")
 	if st.PaymentURL != "" {
 		c.writeRaw("Payment URL: " + st.PaymentURL)

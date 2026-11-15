@@ -273,3 +273,9 @@
 - 修复 commit：待定位（本次 T12 提交）。
 - Done right: 测试凭据只写明显非机密的字面量或运行时拼接；提交前对改动文件 grep `user:`/凭据占位符语法，确认只剩安全字面量。
 - Seen 1× (2026-11-15).
+
+**Telegram 手动提醒的支付确认必须两阶段，向导必须覆盖规格步骤，且不得用非冻结接口实现越界能力。**
+- T12 初版 `mp` 一键确认支付；用 `store` 类型断言实现按 occurrence 取消与 dispatch 明细；遗漏规格 7.1 的 period/asset 步骤。评审要求退修。
+- 修复 commit：待定位（本次 T12 修复提交）。
+- Done right: `mp` 只显示确认提示（Confirm=`mc`、Cancel=`mv`），`mc` 才调用 `ConfirmOccurrence`；只用 `core.ManualReminderService` 与 `core.Store` 的冻结方法；向导含 period（仅 monthly）与 asset（`ListAssets(Limit:0)` + Skip）步骤。
+- Seen 1× (2026-11-15).

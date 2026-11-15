@@ -6,7 +6,40 @@ import (
 	"email-invoice-guard/internal/core"
 )
 
+// callbackManualPaid only shows a two-stage confirmation prompt. A single
+// misclick must not mark a period paid; callbackManualConfirm performs it.
 func (b *Bot) callbackManualPaid(ctx context.Context, cq *callbackQuery, occurrenceID string) {
+	if b.manual == nil {
+		b.answerCallback(ctx, cq.ID, manualNotConfigured, false)
+		return
+	}
+	occ, err := b.manual.GetOccurrence(ctx, occurrenceID)
+	if err != nil {
+		b.answerCallback(ctx, cq.ID, manualErrorText(err), false)
+		return
+	}
+	if occ.Status != core.ManualOccurrencePending {
+		b.answerCallback(ctx, cq.ID, "Occurrence is not pending confirmation", false)
+		return
+	}
+	plan, err := b.manual.GetPlan(ctx, occ.PlanID)
+	if err != nil {
+		b.answerCallback(ctx, cq.ID, manualErrorText(err), false)
+		return
+	}
+	text := "Confirm manual payment for " + escape(plan.Title) + " due " + escape(string(occ.DueDate)) +
+		" (" + escape(manualAmountText(occurrenceAmount(plan, occ))) + ")?\n" +
+		"Only press Confirm if you have actually paid this occurrence."
+	markup := &inlineKeyboard{InlineKeyboard: [][]inlineButton{
+		{{Text: "Confirm paid", CallbackData: callbackData(cbManualConfirm, occ.ID)}},
+		{{Text: "Cancel", CallbackData: callbackData(cbManualView, plan.ID)}},
+	}}
+	b.answerCallback(ctx, cq.ID, "Confirm payment", false)
+	b.editOrSend(ctx, cq, text, markup)
+}
+
+// callbackManualConfirm performs the confirmed transition.
+func (b *Bot) callbackManualConfirm(ctx context.Context, cq *callbackQuery, occurrenceID string) {
 	if b.manual == nil {
 		b.answerCallback(ctx, cq.ID, manualNotConfigured, false)
 		return
@@ -34,28 +67,6 @@ func (b *Bot) callbackManualUndo(ctx context.Context, cq *callbackQuery, occurre
 	b.refreshManualMessage(ctx, cq, occ.PlanID)
 }
 
-// callbackManualCancel cancels one pending occurrence. The frozen service
-// interface does not expose per-occurrence cancellation, so the optional
-// repository CAS is used when the concrete store provides it.
-func (b *Bot) callbackManualCancel(ctx context.Context, cq *callbackQuery, occurrenceID string) {
-	if b.manual == nil {
-		b.answerCallback(ctx, cq.ID, manualNotConfigured, false)
-		return
-	}
-	repo := b.manualRepo()
-	if repo == nil {
-		b.answerCallback(ctx, cq.ID, "Occurrence cancellation is not available", true)
-		return
-	}
-	updated, err := repo.TransitionOccurrence(ctx, occurrenceID, core.ManualOccurrencePending, core.ManualOccurrenceCancelled, cq.From.ID, b.wizardNow())
-	if err != nil {
-		b.answerCallback(ctx, cq.ID, manualErrorText(err), true)
-		return
-	}
-	b.answerCallback(ctx, cq.ID, "Occurrence cancelled", false)
-	b.refreshManualMessage(ctx, cq, updated.PlanID)
-}
-
 func (b *Bot) callbackManualView(ctx context.Context, cq *callbackQuery, planID string) {
 	if b.manual == nil {
 		b.answerCallback(ctx, cq.ID, manualNotConfigured, false)
@@ -73,7 +84,7 @@ func (b *Bot) callbackManualView(ctx context.Context, cq *callbackQuery, planID 
 		return
 	}
 	b.answerCallback(ctx, cq.ID, "Opening plan", false)
-	b.sendManualReply(ctx, cq, b.planReply(plan, occurrences))
+	b.editReply(ctx, cq, b.planReply(plan, occurrences))
 }
 
 func (b *Bot) callbackManualHistory(ctx context.Context, cq *callbackQuery, planID string) {
@@ -92,41 +103,8 @@ func (b *Bot) callbackManualHistory(ctx context.Context, cq *callbackQuery, plan
 		b.log.Warn("telegram: list manual events failed", "plan", planID, "error", err.Error())
 		return
 	}
-	var dispatches []core.ManualDispatch
-	dispatchAvailable := false
-	if reader := b.dispatchReader(); reader != nil {
-		dispatchAvailable = true
-		dispatches, err = reader.ListPlanDispatches(ctx, planID)
-		if err != nil {
-			b.answerCallback(ctx, cq.ID, "History lookup failed", true)
-			b.log.Warn("telegram: list manual dispatches failed", "plan", planID, "error", err.Error())
-			return
-		}
-	}
 	b.answerCallback(ctx, cq.ID, "Opening history", false)
-	b.sendManualReply(ctx, cq, reply{
-		parts:    formatManualHistoryAt(plan, events, dispatches, dispatchAvailable, b.location(ctx)),
-		keyboard: manualHistoryKeyboard(dispatches),
-	})
-}
-
-func (b *Bot) callbackManualDispatch(ctx context.Context, cq *callbackQuery, dispatchID string) {
-	if b.manual == nil {
-		b.answerCallback(ctx, cq.ID, manualNotConfigured, false)
-		return
-	}
-	reader := b.dispatchReader()
-	if reader == nil {
-		b.answerCallback(ctx, cq.ID, "Dispatch detail is not available", true)
-		return
-	}
-	dispatch, err := reader.GetDispatch(ctx, dispatchID)
-	if err != nil {
-		b.answerCallback(ctx, cq.ID, manualErrorText(err), false)
-		return
-	}
-	b.answerCallback(ctx, cq.ID, "Opening dispatch", false)
-	b.sendManualReply(ctx, cq, reply{parts: formatManualDispatchAt(dispatch, b.location(ctx))})
+	b.sendManualReply(ctx, cq, reply{parts: formatManualHistoryAt(plan, events, b.location(ctx))})
 }
 
 // refreshManualMessage re-renders the plan after a successful transition. An

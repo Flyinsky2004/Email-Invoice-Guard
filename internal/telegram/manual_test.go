@@ -216,10 +216,12 @@ func sampleManualOccurrence(status core.ManualOccurrenceStatus) core.ManualOccur
 // manualPlanService returns a fake manual service with the sample plan loaded.
 func manualPlanService() *fakeManual {
 	plan := sampleManualPlan()
+	occ := sampleManualOccurrence(core.ManualOccurrencePending)
 	m := newFakeManual()
 	m.getPlan = func(context.Context, string) (core.ManualPlan, error) { return plan, nil }
+	m.getOccurrence = func(context.Context, string) (core.ManualOccurrence, error) { return occ, nil }
 	m.listOccurrences = func(context.Context, core.ManualOccurrenceFilter) ([]core.ManualOccurrence, error) {
-		return []core.ManualOccurrence{sampleManualOccurrence(core.ManualOccurrencePending)}, nil
+		return []core.ManualOccurrence{occ}, nil
 	}
 	return m
 }
@@ -352,12 +354,12 @@ func TestReminderPendingListsOrderedByDueDate(t *testing.T) {
 	if strings.Index(text, "2026-11-01") > strings.Index(text, "2026-12-01") {
 		t.Fatalf("pending occurrences not ordered by due date: %q", text)
 	}
-	if !hasCallbackPrefix(env.tg.callsFor("sendMessage"), cbManualCancel+":") {
-		t.Fatal("pending list has no cancel button")
+	if !hasCallbackPrefix(env.tg.callsFor("sendMessage"), cbManualPaid+":") {
+		t.Fatal("pending list has no mark-paid button")
 	}
 }
 
-func TestReminderHistoryListsEventsAndDispatches(t *testing.T) {
+func TestReminderHistoryListsEvents(t *testing.T) {
 	env := newTestEnv(t)
 	plan := sampleManualPlan()
 	m := newFakeManual()
@@ -366,20 +368,18 @@ func TestReminderHistoryListsEventsAndDispatches(t *testing.T) {
 		return []core.ManualReminderEvent{
 			{ID: testID(41), PlanID: plan.ID, EventType: core.ManualEventPlanCreated, CreatedAt: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)},
 			{ID: testID(42), PlanID: plan.ID, EventType: core.ManualEventPaymentConfirmed, OccurrenceID: testID(21), CreatedAt: time.Date(2026, 11, 15, 1, 0, 0, 0, time.UTC)},
+			{ID: testID(44), PlanID: plan.ID, EventType: core.ManualEventReminderSent, CreatedAt: time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)},
 		}, nil
-	}
-	env.store.listPlanDispatches = func(context.Context, string) ([]core.ManualDispatch, error) {
-		return []core.ManualDispatch{{ID: testID(43), PlanID: plan.ID, LocalDate: core.Date("2026-11-15"), Kind: core.ManualDispatchDailySummary, Status: core.DeliverySent}}, nil
 	}
 	env.withManual(m)
 	text := sentText(env.runMessage("/reminder_history " + plan.ID))
-	for _, want := range []string{"PLAN_CREATED", "PAYMENT_CONFIRMED", "2026-11-15", "DAILY_SUMMARY", "SENT", testID(43)} {
+	for _, want := range []string{"PLAN_CREATED", "PAYMENT_CONFIRMED", "REMINDER_SENT", testID(21)} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("history missing %q: %q", want, text)
 		}
 	}
-	if !hasCallbackPrefix(env.tg.callsFor("sendMessage"), cbManualDispatch+":") {
-		t.Fatal("history has no dispatch detail button")
+	if strings.Contains(text, "Dispatches") {
+		t.Fatalf("history must render events only: %q", text)
 	}
 }
 
@@ -434,13 +434,42 @@ func TestReminderEditPrefillsWizard(t *testing.T) {
 	}
 }
 
-func TestManualCallbackPaidEditsMessage(t *testing.T) {
+func TestManualCallbackPaidShowsPrompt(t *testing.T) {
 	env := newTestEnv(t)
 	m := manualPlanService()
 	env.withManual(m)
 	answers := env.runCallback(callbackData(cbManualPaid, testID(21)))
+	if len(answers) != 1 || answers[0].Body["text"].(string) != "Confirm payment" {
+		t.Fatalf("paid prompt answer = %v", answers)
+	}
+	if m.called("confirm") {
+		t.Fatal("mp must not confirm before the second stage")
+	}
+	if env.tg.count("editMessageText") != 1 {
+		t.Fatalf("prompt was not edited into the message: %d", env.tg.count("editMessageText"))
+	}
+	text := editedText(env.tg)
+	for _, want := range []string{"VPS renewal", "2026-11-15", "18.00 USD", "Confirm"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prompt missing %q: %q", want, text)
+		}
+	}
+	calls := env.tg.callsFor("editMessageText")
+	if !hasCallbackPrefix(calls, cbManualConfirm+":") {
+		t.Fatal("prompt has no confirm button")
+	}
+	if !hasCallbackPrefix(calls, cbManualView+":") {
+		t.Fatal("prompt has no cancel button")
+	}
+}
+
+func TestManualCallbackConfirmEditsMessage(t *testing.T) {
+	env := newTestEnv(t)
+	m := manualPlanService()
+	env.withManual(m)
+	answers := env.runCallback(callbackData(cbManualConfirm, testID(21)))
 	if len(answers) != 1 || answers[0].Body["text"].(string) != "Marked as paid" {
-		t.Fatalf("paid callback answer = %v", answers)
+		t.Fatalf("confirm callback answer = %v", answers)
 	}
 	if !m.called("confirm") || m.lastActor != 7 {
 		t.Fatalf("confirm not called with actor 7: %v", m.calls)
@@ -469,38 +498,6 @@ func TestManualCallbackUndoEditsMessage(t *testing.T) {
 	}
 }
 
-func TestManualCallbackCancelOccurrence(t *testing.T) {
-	env := newTestEnv(t)
-	m := manualPlanService()
-	var from, to core.ManualOccurrenceStatus
-	var actor int64
-	env.store.transitionOccurrence = func(_ context.Context, id string, f, t2 core.ManualOccurrenceStatus, a int64, _ time.Time) (core.ManualOccurrence, error) {
-		from, to, actor = f, t2, a
-		return core.ManualOccurrence{ID: id, PlanID: testID(20), DueDate: core.Date("2026-11-15"), Status: core.ManualOccurrenceCancelled}, nil
-	}
-	env.withManual(m)
-	answers := env.runCallback(callbackData(cbManualCancel, testID(21)))
-	if len(answers) != 1 || answers[0].Body["text"].(string) != "Occurrence cancelled" {
-		t.Fatalf("cancel callback answer = %v", answers)
-	}
-	if from != core.ManualOccurrencePending || to != core.ManualOccurrenceCancelled || actor != 7 {
-		t.Fatalf("transition = %s->%s actor %d", from, to, actor)
-	}
-	if env.tg.count("editMessageText") != 1 {
-		t.Fatal("message was not edited after cancel")
-	}
-}
-
-func TestManualCallbackCancelWithoutRepository(t *testing.T) {
-	env := newTestEnv(t)
-	env.withManual(manualPlanService())
-	env.bot.store = &storeOnly{Store: env.store}
-	answers := env.runCallback(callbackData(cbManualCancel, testID(21)))
-	if len(answers) != 1 || !strings.Contains(answers[0].Body["text"].(string), "not available") {
-		t.Fatalf("cancel without repository answer = %v", answers)
-	}
-}
-
 func TestManualCallbackViewAndHistory(t *testing.T) {
 	env := newTestEnv(t)
 	plan := sampleManualPlan()
@@ -510,7 +507,7 @@ func TestManualCallbackViewAndHistory(t *testing.T) {
 	}
 	env.withManual(m)
 	env.runCallback(callbackData(cbManualView, plan.ID))
-	if text := sentText(env.tg.callsFor("sendMessage")); !strings.Contains(text, "VPS renewal") {
+	if text := editedText(env.tg); !strings.Contains(text, "VPS renewal") {
 		t.Fatalf("view plan reply = %q", text)
 	}
 	env.tg.reset()
@@ -520,26 +517,11 @@ func TestManualCallbackViewAndHistory(t *testing.T) {
 	}
 }
 
-func TestManualCallbackDispatchDetail(t *testing.T) {
-	env := newTestEnv(t)
-	env.store.getDispatch = func(_ context.Context, id string) (core.ManualDispatch, error) {
-		return core.ManualDispatch{ID: id, PlanID: testID(20), LocalDate: core.Date("2026-11-15"), Kind: core.ManualDispatchDailySummary, Status: core.DeliverySent, OccurrenceIDs: []string{testID(21)}}, nil
-	}
-	env.withManual(manualPlanService())
-	env.runCallback(callbackData(cbManualDispatch, testID(43)))
-	text := sentText(env.tg.callsFor("sendMessage"))
-	for _, want := range []string{"DAILY_SUMMARY", "SENT", "2026-11-15", "Occurrences: 1"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("dispatch detail missing %q: %q", want, text)
-		}
-	}
-}
-
 func TestManualCallbackDeniedForeignUser(t *testing.T) {
 	env := newTestEnv(t)
 	m := manualPlanService()
 	env.withManual(m)
-	cq := env.callback(callbackData(cbManualPaid, testID(21)))
+	cq := env.callback(callbackData(cbManualConfirm, testID(21)))
 	cq.From.ID = 8
 	env.bot.handleCallback(context.Background(), cq)
 	answers := env.tg.callsFor("answerCallbackQuery")
@@ -555,7 +537,7 @@ func TestManualCallbackDeniedForeignChat(t *testing.T) {
 	env := newTestEnv(t)
 	m := manualPlanService()
 	env.withManual(m)
-	cq := env.callback(callbackData(cbManualPaid, testID(21)))
+	cq := env.callback(callbackData(cbManualConfirm, testID(21)))
 	cq.Message.Chat.ID = 99
 	env.bot.handleCallback(context.Background(), cq)
 	if got := env.tg.count("answerCallbackQuery"); got != 1 {
@@ -573,7 +555,7 @@ func TestManualCallbackEditFailureKeepsState(t *testing.T) {
 	env.tg.setHandler("editMessageText", func(context.Context, map[string]any) (any, *tgFailure) {
 		return nil, &tgFailure{code: 400, description: "message can't be edited"}
 	})
-	answers := env.runCallback(callbackData(cbManualPaid, testID(21)))
+	answers := env.runCallback(callbackData(cbManualConfirm, testID(21)))
 	if len(answers) != 1 || answers[0].Body["text"].(string) != "Marked as paid" {
 		t.Fatalf("answer after edit failure = %v", answers)
 	}
@@ -592,7 +574,7 @@ func TestManualCallbackPaymentErrorsReported(t *testing.T) {
 		return core.ManualOccurrence{}, core.ErrConflict
 	}
 	env.withManual(m)
-	answers := env.runCallback(callbackData(cbManualPaid, testID(21)))
+	answers := env.runCallback(callbackData(cbManualConfirm, testID(21)))
 	if len(answers) != 1 || !strings.Contains(answers[0].Body["text"].(string), "current state") {
 		t.Fatalf("conflict answer = %v", answers)
 	}
@@ -646,9 +628,6 @@ func TestReminderPendingShowsOccurrenceIDs(t *testing.T) {
 		t.Fatalf("pending list hides the occurrence id: %q", text)
 	}
 }
-
-// storeOnly hides the manual repository surface from the bot.
-type storeOnly struct{ core.Store }
 
 func hasCallbackPrefix(calls []tgCall, prefix string) bool {
 	for _, call := range calls {

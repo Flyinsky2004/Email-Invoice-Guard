@@ -10,15 +10,21 @@ import (
 	"email-invoice-guard/internal/core"
 )
 
+// wizardAssetOptionLimit caps the asset buttons so the keyboard stays well
+// below Telegram's 100-button ceiling.
+const wizardAssetOptionLimit = 10
+
 // wizardStep is one field of the manual-plan creation wizard.
 type wizardStep int
 
 const (
 	wzStepTitle wizardStep = iota
+	wzStepPeriod
 	wzStepProvider
 	wzStepAmount
 	wzStepCurrency
 	wzStepBillingDay
+	wzStepAsset
 	wzStepReminderTime
 	wzStepTimezone
 	wzStepPaymentURL
@@ -35,14 +41,22 @@ type wizardState struct {
 	PlanID         string
 
 	Title, ProviderName, Currency string
+	Period                        string
 	AmountMinor                   int64
 	HasAmount                     bool
 	BillingDay                    int
 	ReminderTime, Timezone        string
 	PaymentURL, Notes             string
-	// AssetID and Description are not wizard steps but are preserved when an
-	// existing plan is edited.
+	// AssetID and Description are not free-text steps: AssetID is selected in
+	// step 6 and Description is preserved when an existing plan is edited.
 	AssetID, Description string
+
+	// Asset options are short callback tokens mapped to asset IDs so every
+	// callback_data stays within 64 bytes.
+	AssetOptions map[string]string
+	AssetLabels  map[string]string
+	AssetTokens  []string
+	AssetNote    string
 
 	// pendingAmount holds an amount typed without a currency until the
 	// currency selection step completes.
@@ -99,6 +113,7 @@ func (b *Bot) startWizard(ctx context.Context, userID, chatID int64, planID stri
 		UserID:       userID,
 		Step:         wzStepTitle,
 		PlanID:       planID,
+		Period:       "monthly",
 		ReminderTime: b.defaultWizardTime(),
 		Timezone:     b.defaultWizardTimezone(),
 		ExpiresAt:    b.wizardNow().Add(b.wizardTTL()),
@@ -120,6 +135,7 @@ func (b *Bot) startWizard(ctx context.Context, userID, chatID int64, planID stri
 func (st *wizardState) prefill(plan core.ManualPlan) {
 	st.Title = plan.Title
 	st.ProviderName = plan.ProviderName
+	st.Period = "monthly"
 	if plan.Amount != nil {
 		st.HasAmount = true
 		st.AmountMinor = plan.Amount.Minor
@@ -153,7 +169,7 @@ func (b *Bot) wizardInput(ctx context.Context, m *message) (reply, bool) {
 		b.wizardMu.Unlock()
 		return reply{parts: []string{"Wizard expired. Start again with /reminder_add."}}, true
 	}
-	rep := b.wizardApplyText(st, strings.TrimSpace(m.Text))
+	rep := b.wizardApplyText(ctx, st, strings.TrimSpace(m.Text))
 	st.ExpiresAt = b.wizardNow().Add(b.wizardTTL())
 	b.wizardMu.Unlock()
 	return rep, true
@@ -161,13 +177,19 @@ func (b *Bot) wizardInput(ctx context.Context, m *message) (reply, bool) {
 
 // wizardApplyText validates one text answer, stores it and returns the next
 // prompt. A validation failure keeps the current step.
-func (b *Bot) wizardApplyText(st *wizardState, text string) reply {
+func (b *Bot) wizardApplyText(ctx context.Context, st *wizardState, text string) reply {
 	switch st.Step {
 	case wzStepTitle:
 		if text == "" || utf8.RuneCountInString(text) > manualMaxTitle {
 			return b.wizardPrompt(st, "Title must be 1-200 characters.")
 		}
 		st.Title = text
+		st.Step = wzStepPeriod
+	case wzStepPeriod:
+		if !strings.EqualFold(text, "monthly") {
+			return b.wizardPrompt(st, "Select Monthly to continue; v1 supports monthly plans only.")
+		}
+		st.Period = "monthly"
 		st.Step = wzStepProvider
 	case wzStepProvider:
 		if text == "-" {
@@ -221,7 +243,10 @@ func (b *Bot) wizardApplyText(st *wizardState, text string) reply {
 			return b.wizardPrompt(st, "Billing day must be a number from 1 to 31.")
 		}
 		st.BillingDay = day
-		st.Step = wzStepReminderTime
+		st.Step = wzStepAsset
+		b.prepareAssetStep(ctx, st)
+	case wzStepAsset:
+		return b.wizardPrompt(st, "Select an asset or Skip.")
 	case wzStepReminderTime:
 		if text != "-" {
 			if !validReminderTime(text) {
@@ -283,6 +308,41 @@ func (b *Bot) applyWizardCurrency(st *wizardState, currency string) reply {
 	return b.wizardPrompt(st, "")
 }
 
+// prepareAssetStep loads assets for the asset step. A read failure is shown to
+// the user and only Skip is offered, so the wizard never hides the problem.
+func (b *Bot) prepareAssetStep(ctx context.Context, st *wizardState) {
+	st.AssetOptions = make(map[string]string)
+	st.AssetLabels = make(map[string]string)
+	st.AssetTokens = nil
+	st.AssetNote = ""
+	if b.store == nil {
+		st.AssetNote = "Assets are unavailable; press Skip."
+		return
+	}
+	assets, err := b.store.ListAssets(ctx, core.AssetFilter{Limit: 0})
+	if err != nil {
+		st.AssetNote = "Could not load assets; press Skip."
+		b.log.Warn("telegram: list assets for wizard failed", "error", err.Error())
+		return
+	}
+	for i, asset := range assets {
+		if i >= wizardAssetOptionLimit {
+			break
+		}
+		token := fmt.Sprintf("a%d", i+1)
+		st.AssetOptions[token] = asset.ID
+		st.AssetLabels[token] = firstNonEmpty(ptrText(asset.Hostname), ptrText(asset.ProductModel), ptrText(asset.ProductID), asset.ID)
+		st.AssetTokens = append(st.AssetTokens, token)
+	}
+}
+
+// prepareWizardStep refreshes step-specific data after navigation.
+func (b *Bot) prepareWizardStep(ctx context.Context, st *wizardState) {
+	if st.Step == wzStepAsset {
+		b.prepareAssetStep(ctx, st)
+	}
+}
+
 func validAmountDigits(s string) bool {
 	if s == "" {
 		return false
@@ -313,6 +373,8 @@ func previousWizardStep(st *wizardState) wizardStep {
 	case wzStepTimezone:
 		return wzStepReminderTime
 	case wzStepReminderTime:
+		return wzStepAsset
+	case wzStepAsset:
 		return wzStepBillingDay
 	case wzStepBillingDay:
 		return wzStepAmount
@@ -321,6 +383,8 @@ func previousWizardStep(st *wizardState) wizardStep {
 	case wzStepAmount:
 		return wzStepProvider
 	case wzStepProvider:
+		return wzStepPeriod
+	case wzStepPeriod:
 		return wzStepTitle
 	default:
 		return wzStepTitle
@@ -346,23 +410,31 @@ func (b *Bot) wizardPrompt(st *wizardState, errMsg string) reply {
 func wizardStepText(st *wizardState) string {
 	switch st.Step {
 	case wzStepTitle:
-		return "Step 1/8 — send the plan title."
+		return "Step 1/10 — send the plan title."
+	case wzStepPeriod:
+		return "Step 2/10 — select the billing period. v1 supports monthly plans only."
 	case wzStepProvider:
-		return "Step 2/8 — send the provider name, or - to skip."
+		return "Step 3/10 — send the provider name, or - to skip."
 	case wzStepAmount:
-		return "Step 3/8 — send the amount like 18.00 USD, or - for no fixed amount."
+		return "Step 4/10 — send the amount like 18.00 USD, or - for no fixed amount."
 	case wzStepCurrency:
-		return "Step 3/8 — select the currency for " + escape(st.pendingAmount) + "."
+		return "Step 4/10 — select the currency for " + escape(st.pendingAmount) + "."
 	case wzStepBillingDay:
-		return "Step 4/8 — send the billing day (1-31)."
+		return "Step 5/10 — send the billing day (1-31)."
+	case wzStepAsset:
+		text := "Step 6/10 — select an asset to link, or Skip."
+		if st.AssetNote != "" {
+			text = escape(st.AssetNote) + "\n" + text
+		}
+		return text
 	case wzStepReminderTime:
-		return "Step 5/8 — send the reminder time HH:MM (default " + escape(st.ReminderTime) + "), or - to keep it."
+		return "Step 7/10 — send the reminder time HH:MM (default " + escape(st.ReminderTime) + "), or - to keep it."
 	case wzStepTimezone:
-		return "Step 6/8 — send the IANA timezone (default " + escape(st.Timezone) + "), or - to keep it."
+		return "Step 8/10 — send the IANA timezone (default " + escape(st.Timezone) + "), or - to keep it."
 	case wzStepPaymentURL:
-		return "Step 7/8 — send an https payment URL, or - to skip."
+		return "Step 9/10 — send an https payment URL, or - to skip."
 	case wzStepNotes:
-		return "Step 8/8 — send notes, or - to skip."
+		return "Step 10/10 — send notes, or - to skip."
 	default:
 		return "Review the plan."
 	}
@@ -370,7 +442,13 @@ func wizardStepText(st *wizardState) string {
 
 func (b *Bot) wizardKeyboard(st *wizardState) *inlineKeyboard {
 	rows := make([][]inlineButton, 0, 4)
-	if st.Step == wzStepCurrency {
+	switch st.Step {
+	case wzStepPeriod:
+		rows = append(rows, []inlineButton{{
+			Text:         "Monthly (v1 only)",
+			CallbackData: callbackData(cbWizardValue, st.ID) + ":monthly",
+		}})
+	case wzStepCurrency:
 		currencies := supportedCurrencies()
 		for i := 0; i < len(currencies); i += 4 {
 			end := i + 4
@@ -386,6 +464,17 @@ func (b *Bot) wizardKeyboard(st *wizardState) *inlineKeyboard {
 			}
 			rows = append(rows, row)
 		}
+	case wzStepAsset:
+		for _, token := range st.AssetTokens {
+			rows = append(rows, []inlineButton{{
+				Text:         st.AssetLabels[token],
+				CallbackData: callbackData(cbWizardValue, st.ID) + ":" + token,
+			}})
+		}
+		rows = append(rows, []inlineButton{{
+			Text:         "Skip",
+			CallbackData: callbackData(cbWizardValue, st.ID) + ":skip",
+		}})
 	}
 	nav := make([]inlineButton, 0, 2)
 	if st.Step != wzStepTitle {
@@ -482,22 +571,22 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cq *callbackQuery, actio
 		b.editOrSend(ctx, cq, "Wizard cancelled.", nil)
 	case cbWizardBack:
 		st.Step = previousWizardStep(st)
+		b.prepareWizardStep(ctx, st)
 		st.ExpiresAt = b.wizardNow().Add(b.wizardTTL())
 		rep := b.wizardPrompt(st, "")
 		b.wizardMu.Unlock()
 		b.answerCallback(ctx, cq.ID, "Back", false)
 		b.editReply(ctx, cq, rep)
 	case cbWizardValue:
-		if st.Step != wzStepCurrency {
+		rep, answer, ok := b.applyWizardValue(st, value)
+		if !ok {
 			b.wizardMu.Unlock()
-			b.answerCallback(ctx, cq.ID, "No value to select here", false)
+			b.answerCallback(ctx, cq.ID, answer, false)
 			return
 		}
-		currency := strings.ToUpper(value)
-		rep := b.applyWizardCurrency(st, currency)
 		st.ExpiresAt = b.wizardNow().Add(b.wizardTTL())
 		b.wizardMu.Unlock()
-		b.answerCallback(ctx, cq.ID, "Selected "+currency, false)
+		b.answerCallback(ctx, cq.ID, answer, false)
 		b.editReply(ctx, cq, rep)
 	case cbWizardAdvance:
 		if st.Step != wzStepConfirm {
@@ -523,4 +612,48 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cq *callbackQuery, actio
 		b.wizardMu.Unlock()
 		b.answerCallback(ctx, cq.ID, "Unknown action", false)
 	}
+}
+
+// applyWizardValue handles a wv selection for the current step. It returns the
+// next prompt, a callback answer and whether the value was valid.
+func (b *Bot) applyWizardValue(st *wizardState, value string) (reply, string, bool) {
+	switch st.Step {
+	case wzStepPeriod:
+		if !strings.EqualFold(value, "monthly") {
+			return reply{}, "Only monthly is supported", false
+		}
+		st.Period = "monthly"
+		st.Step = wzStepProvider
+		return b.wizardPrompt(st, ""), "Selected monthly", true
+	case wzStepCurrency:
+		currency := strings.ToUpper(value)
+		if _, ok := core.CurrencyDecimals(currency); !ok {
+			return reply{}, "Unsupported currency", false
+		}
+		return b.applyWizardCurrency(st, currency), "Selected " + currency, true
+	case wzStepAsset:
+		if strings.EqualFold(value, "skip") {
+			st.AssetID = ""
+			st.clearAssetOptions()
+			st.Step = wzStepReminderTime
+			return b.wizardPrompt(st, ""), "Asset skipped", true
+		}
+		assetID, ok := st.AssetOptions[value]
+		if !ok {
+			return reply{}, "Unknown asset", false
+		}
+		st.AssetID = assetID
+		st.clearAssetOptions()
+		st.Step = wzStepReminderTime
+		return b.wizardPrompt(st, ""), "Asset linked", true
+	default:
+		return reply{}, "No value to select here", false
+	}
+}
+
+func (st *wizardState) clearAssetOptions() {
+	st.AssetOptions = nil
+	st.AssetLabels = nil
+	st.AssetTokens = nil
+	st.AssetNote = ""
 }

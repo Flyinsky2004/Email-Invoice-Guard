@@ -73,21 +73,44 @@ func wizardSend(t *testing.T, env *testEnv, text string) string {
 	return sentText(env.runMessage(text))
 }
 
+// wizardSelect presses the current step's value button and returns the edited
+// prompt text.
+func wizardSelect(t *testing.T, env *testEnv, value string) string {
+	t.Helper()
+	token := lastWizardToken(t, env)
+	env.tg.reset()
+	env.runCallback(callbackData(cbWizardValue, token) + ":" + value)
+	return editedText(env.tg)
+}
+
 func TestWizardCreateFlow(t *testing.T) {
 	env := newTestEnv(t)
 	m := newFakeManual()
 	env.withManual(m)
 
-	if text := wizardSend(t, env, "/reminder_add"); !strings.Contains(text, "Step 1/8") {
+	if text := wizardSend(t, env, "/reminder_add"); !strings.Contains(text, "Step 1/10") {
 		t.Fatalf("wizard did not start: %q", text)
 	}
-	steps := []string{"VPS renewal", "Example Host", "18.00 USD", "15", "-", "-", "https://billing.example.test/pay/1", "monthly"}
+	wizardSend(t, env, "VPS renewal")
+	if text := wizardSelect(t, env, "monthly"); !strings.Contains(text, "Step 3/10") {
+		t.Fatalf("period step did not advance: %q", text)
+	}
+	for _, step := range []string{"Example Host", "18.00 USD", "15"} {
+		wizardSend(t, env, step)
+	}
+	if text := wizardSelect(t, env, "skip"); !strings.Contains(text, "Step 7/10") {
+		t.Fatalf("asset step did not advance: %q", text)
+	}
+	steps := []string{"-", "-", "https://billing.example.test/pay/1", "auto-renew"}
 	var text string
 	for _, step := range steps {
 		text = wizardSend(t, env, step)
 	}
 	if !strings.Contains(text, "Review manual reminder") || !strings.Contains(text, "VPS renewal") {
 		t.Fatalf("confirm preview = %q", text)
+	}
+	if !strings.Contains(text, "Period: monthly") || !strings.Contains(text, "Asset: none") {
+		t.Fatalf("confirm preview missing period/asset: %q", text)
 	}
 	token := lastWizardToken(t, env)
 	answers := env.runCallback(callbackData(cbWizardAdvance, token))
@@ -107,8 +130,11 @@ func TestWizardCreateFlow(t *testing.T) {
 	if input.BillingDay != 15 || input.ReminderTime != "09:00" || input.Timezone != "Asia/Taipei" {
 		t.Fatalf("unexpected schedule fields: %+v", input)
 	}
-	if input.PaymentURL != "https://billing.example.test/pay/1" || input.Notes != "monthly" {
+	if input.PaymentURL != "https://billing.example.test/pay/1" || input.Notes != "auto-renew" {
 		t.Fatalf("unexpected optional fields: %+v", input)
+	}
+	if input.AssetID != "" {
+		t.Fatalf("skipped asset leaked into the input: %+v", input)
 	}
 	if m.lastActor != 7 {
 		t.Fatalf("actor = %d, want 7", m.lastActor)
@@ -124,17 +150,14 @@ func TestWizardValidationFailures(t *testing.T) {
 	env.withManual(m)
 	wizardSend(t, env, "/reminder_add")
 
-	cases := []struct {
-		input string
-		want  string
-	}{
-		{strings.Repeat("x", manualMaxTitle+1), "Title must be 1-200 characters."},
-		{"VPS renewal", "Step 2/8"},
+	if text := wizardSend(t, env, strings.Repeat("x", manualMaxTitle+1)); !strings.Contains(text, "Title must be 1-200 characters.") {
+		t.Fatalf("oversized title accepted: %q", text)
 	}
-	for _, tc := range cases {
-		if text := wizardSend(t, env, tc.input); !strings.Contains(text, tc.want) {
-			t.Fatalf("%q = %q, want %q", tc.input, text, tc.want)
-		}
+	if text := wizardSend(t, env, "VPS renewal"); !strings.Contains(text, "Step 2/10") {
+		t.Fatalf("title step did not advance: %q", text)
+	}
+	if text := wizardSelect(t, env, "monthly"); !strings.Contains(text, "Step 3/10") {
+		t.Fatalf("period step did not advance: %q", text)
 	}
 	// Provider, then invalid amount forms.
 	wizardSend(t, env, "-")
@@ -152,6 +175,9 @@ func TestWizardValidationFailures(t *testing.T) {
 		t.Fatalf("billing day 32 accepted: %q", text)
 	}
 	wizardSend(t, env, "15")
+	if text := wizardSelect(t, env, "skip"); !strings.Contains(text, "Step 7/10") {
+		t.Fatalf("asset step did not advance: %q", text)
+	}
 	if text := wizardSend(t, env, "25:00"); !strings.Contains(text, "HH:MM") {
 		t.Fatalf("invalid time accepted: %q", text)
 	}
@@ -233,10 +259,10 @@ func TestWizardBack(t *testing.T) {
 	if len(answers) != 1 || answers[0].Body["text"].(string) != "Back" {
 		t.Fatalf("back callback = %v", answers)
 	}
-	if text := editedText(env.tg); !strings.Contains(text, "Step 1/8") {
+	if text := editedText(env.tg); !strings.Contains(text, "Step 1/10") {
 		t.Fatalf("back did not return to the title step: %q", text)
 	}
-	if text := wizardSend(t, env, "New title"); !strings.Contains(text, "Step 2/8") {
+	if text := wizardSend(t, env, "New title"); !strings.Contains(text, "Step 2/10") {
 		t.Fatalf("wizard did not continue after back: %q", text)
 	}
 }
@@ -247,6 +273,7 @@ func TestWizardCurrencySelection(t *testing.T) {
 	env.withManual(m)
 	wizardSend(t, env, "/reminder_add")
 	wizardSend(t, env, "VPS renewal")
+	wizardSelect(t, env, "monthly")
 	wizardSend(t, env, "-")
 	if text := wizardSend(t, env, "18.00"); !strings.Contains(text, "select the currency") {
 		t.Fatalf("currency step not reached: %q", text)
@@ -256,10 +283,12 @@ func TestWizardCurrencySelection(t *testing.T) {
 	if len(answers) != 1 || answers[0].Body["text"].(string) != "Selected USD" {
 		t.Fatalf("currency selection = %v", answers)
 	}
-	if text := editedText(env.tg); !strings.Contains(text, "Step 4/8") {
+	if text := editedText(env.tg); !strings.Contains(text, "Step 5/10") {
 		t.Fatalf("currency selection did not advance: %q", text)
 	}
-	for _, step := range []string{"15", "-", "-", "-", "-"} {
+	wizardSend(t, env, "15")
+	wizardSelect(t, env, "skip")
+	for _, step := range []string{"-", "-", "-", "-"} {
 		wizardSend(t, env, step)
 	}
 	token = lastWizardToken(t, env)
@@ -274,16 +303,24 @@ func TestWizardCurrencySelection(t *testing.T) {
 
 func TestWizardCallbackDataFitsTelegramLimit(t *testing.T) {
 	env := newTestEnv(t)
+	host := "node-01.example.net"
+	env.store.listAssets = func(context.Context, core.AssetFilter) ([]core.Asset, error) {
+		return []core.Asset{{ID: testID(50), ProviderID: "rfchost", Hostname: &host}}, nil
+	}
 	env.withManual(newFakeManual())
-	wizardSend(t, env, "/reminder_add")
-	wizardSend(t, env, "VPS renewal")
-	wizardSend(t, env, "-")
-	wizardSend(t, env, "18.00")
-	wizardSend(t, env, "15")
-	wizardSend(t, env, "-")
-	wizardSend(t, env, "-")
-	wizardSend(t, env, "-")
-	wizardSend(t, env, "-")
+	env.runMessage("/reminder_add")
+	env.runMessage("VPS renewal")
+	token := lastWizardToken(t, env)
+	env.runCallback(callbackData(cbWizardValue, token) + ":monthly")
+	env.runMessage("-")
+	env.runMessage("18.00 USD")
+	env.runMessage("15")
+	token = lastWizardToken(t, env)
+	env.runCallback(callbackData(cbWizardValue, token) + ":a1")
+	env.runMessage("-")
+	env.runMessage("-")
+	env.runMessage("-")
+	env.runMessage("-")
 
 	env.tg.mu.Lock()
 	defer env.tg.mu.Unlock()
@@ -403,4 +440,172 @@ func TestWizardRejectsCallbackAtTextStep(t *testing.T) {
 	if len(answers) != 1 || !strings.Contains(answers[0].Body["text"].(string), "text prompt") {
 		t.Fatalf("advance at text step = %v", answers)
 	}
+}
+
+func TestWizardPeriodStep(t *testing.T) {
+	env := newTestEnv(t)
+	env.withManual(newFakeManual())
+	wizardSend(t, env, "/reminder_add")
+	text := wizardSend(t, env, "VPS renewal")
+	if !strings.Contains(text, "Step 2/10") || !strings.Contains(text, "monthly plans only") {
+		t.Fatalf("period step prompt = %q", text)
+	}
+	if !hasCallbackPrefix(env.tg.callsFor("sendMessage"), cbWizardValue+":") {
+		t.Fatal("period step has no Monthly button")
+	}
+	if text := wizardSend(t, env, "not-monthly"); !strings.Contains(text, "monthly") {
+		t.Fatalf("period step accepted an invalid text value: %q", text)
+	}
+	if text := wizardSelect(t, env, "monthly"); !strings.Contains(text, "Step 3/10") {
+		t.Fatalf("period selection did not advance: %q", text)
+	}
+}
+
+func TestWizardAssetStepListsAssets(t *testing.T) {
+	env := newTestEnv(t)
+	host := "node-01.example.net"
+	model := "VPS-2C4G"
+	env.store.listAssets = func(context.Context, core.AssetFilter) ([]core.Asset, error) {
+		return []core.Asset{
+			{ID: testID(50), ProviderID: "rfchost", Hostname: &host},
+			{ID: testID(51), ProviderID: "rfchost", ProductModel: &model},
+		}, nil
+	}
+	m := newFakeManual()
+	env.withManual(m)
+	wizardSend(t, env, "/reminder_add")
+	wizardSend(t, env, "VPS renewal")
+	wizardSelect(t, env, "monthly")
+	wizardSend(t, env, "-")
+	wizardSend(t, env, "18.00 USD")
+	if text := wizardSend(t, env, "15"); !strings.Contains(text, "Step 6/10") {
+		t.Fatalf("asset step not reached: %q", text)
+	}
+	call, ok := env.tg.last("sendMessage")
+	if !ok {
+		t.Fatal("no asset prompt")
+	}
+	labels := buttonTexts(call.Body["reply_markup"])
+	for _, want := range []string{"node-01.example.net", "VPS-2C4G", "Skip"} {
+		if !containsString(labels, want) {
+			t.Fatalf("asset keyboard missing %q: %v", want, labels)
+		}
+	}
+	if text := wizardSelect(t, env, "a1"); !strings.Contains(text, "Step 7/10") {
+		t.Fatalf("asset selection did not advance: %q", text)
+	}
+	for _, step := range []string{"-", "-", "-", "-"} {
+		wizardSend(t, env, step)
+	}
+	token := lastWizardToken(t, env)
+	env.runCallback(callbackData(cbWizardAdvance, token))
+	if !m.called("create") {
+		t.Fatalf("CreatePlan not called: %v", m.calls)
+	}
+	if m.lastCreateInput.AssetID != testID(50) {
+		t.Fatalf("asset id = %q, want %q", m.lastCreateInput.AssetID, testID(50))
+	}
+}
+
+func TestWizardAssetStepNoAssets(t *testing.T) {
+	env := newTestEnv(t)
+	m := newFakeManual()
+	env.withManual(m)
+	wizardSend(t, env, "/reminder_add")
+	wizardSend(t, env, "VPS renewal")
+	wizardSelect(t, env, "monthly")
+	wizardSend(t, env, "-")
+	wizardSend(t, env, "18.00 USD")
+	wizardSend(t, env, "15")
+	call, ok := env.tg.last("sendMessage")
+	if !ok {
+		t.Fatal("no asset prompt")
+	}
+	labels := buttonTexts(call.Body["reply_markup"])
+	if !containsString(labels, "Skip") {
+		t.Fatalf("asset keyboard missing Skip: %v", labels)
+	}
+	if containsString(labels, "a1") {
+		t.Fatalf("asset keyboard offered an asset when none exist: %v", labels)
+	}
+	wizardSelect(t, env, "skip")
+	for _, step := range []string{"-", "-", "-", "-"} {
+		wizardSend(t, env, step)
+	}
+	token := lastWizardToken(t, env)
+	env.runCallback(callbackData(cbWizardAdvance, token))
+	if m.lastCreateInput.AssetID != "" {
+		t.Fatalf("asset id = %q, want empty", m.lastCreateInput.AssetID)
+	}
+}
+
+func TestWizardAssetStepReadError(t *testing.T) {
+	env := newTestEnv(t)
+	env.store.listAssets = func(context.Context, core.AssetFilter) ([]core.Asset, error) {
+		return nil, errBoom
+	}
+	m := newFakeManual()
+	env.withManual(m)
+	wizardSend(t, env, "/reminder_add")
+	wizardSend(t, env, "VPS renewal")
+	wizardSelect(t, env, "monthly")
+	wizardSend(t, env, "-")
+	wizardSend(t, env, "18.00 USD")
+	text := wizardSend(t, env, "15")
+	if !strings.Contains(text, "Could not load assets") {
+		t.Fatalf("asset read error was hidden: %q", text)
+	}
+	call, ok := env.tg.last("sendMessage")
+	if !ok {
+		t.Fatal("no asset prompt")
+	}
+	if !containsString(buttonTexts(call.Body["reply_markup"]), "Skip") {
+		t.Fatal("asset read error did not offer Skip")
+	}
+	wizardSelect(t, env, "skip")
+	for _, step := range []string{"-", "-", "-", "-"} {
+		wizardSend(t, env, step)
+	}
+	token := lastWizardToken(t, env)
+	env.runCallback(callbackData(cbWizardAdvance, token))
+	if !m.called("create") {
+		t.Fatalf("CreatePlan not called after Skip: %v", m.calls)
+	}
+}
+
+func buttonTexts(markup any) []string {
+	root, ok := markup.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rows, ok := root["inline_keyboard"].([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, row := range rows {
+		buttons, ok := row.([]any)
+		if !ok {
+			continue
+		}
+		for _, button := range buttons {
+			entry, ok := button.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text, ok := entry["text"].(string); ok {
+				out = append(out, text)
+			}
+		}
+	}
+	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

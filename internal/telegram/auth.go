@@ -20,12 +20,13 @@ const (
 	cbRemoveConfirm = "rmc"
 
 	// Manual reminder callbacks. The identifier is always a 32-hex ID.
-	cbManualPaid     = "mp"
-	cbManualCancel   = "mc"
-	cbManualUndo     = "mu"
-	cbManualView     = "mv"
-	cbManualHistory  = "mh"
-	cbManualDispatch = "mdc"
+	// mp only shows a confirmation prompt; mc performs the confirmation, so a
+	// single misclick cannot mark a period paid.
+	cbManualPaid    = "mp"
+	cbManualConfirm = "mc"
+	cbManualUndo    = "mu"
+	cbManualView    = "mv"
+	cbManualHistory = "mh"
 
 	// Wizard callbacks use a separate namespace and parser.
 	cbWizardAdvance = "wz"
@@ -47,7 +48,7 @@ func parseCallbackData(data string) (action, id string, ok bool) {
 	}
 	switch action {
 	case cbPaidPrompt, cbPaidConfirm, cbPaidUndo, cbPaidCancel, cbEmail, cbInvoice, cbAssetHistory, cbRemoveConfirm,
-		cbManualPaid, cbManualCancel, cbManualUndo, cbManualView, cbManualHistory, cbManualDispatch:
+		cbManualPaid, cbManualConfirm, cbManualUndo, cbManualView, cbManualHistory:
 		return action, id, true
 	default:
 		return "", "", false

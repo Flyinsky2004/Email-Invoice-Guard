@@ -25,39 +25,6 @@ const (
 	manualKeyboardOccurrenceLimit = 20
 )
 
-// manualDispatchReader is an optional read surface for dispatch history. The
-// frozen service interface does not expose dispatches, so the concrete service
-// or storage repository is used when available.
-type manualDispatchReader interface {
-	ListPlanDispatches(context.Context, string) ([]core.ManualDispatch, error)
-	GetDispatch(context.Context, string) (core.ManualDispatch, error)
-}
-
-// dispatchReader prefers the injected manual service, then the store.
-func (b *Bot) dispatchReader() manualDispatchReader {
-	if b.manual != nil {
-		if reader, ok := b.manual.(manualDispatchReader); ok {
-			return reader
-		}
-	}
-	if b.store != nil {
-		if reader, ok := b.store.(manualDispatchReader); ok {
-			return reader
-		}
-	}
-	return nil
-}
-
-// manualRepo returns the optional repository used for operations the frozen
-// service interface does not expose (per-occurrence cancellation).
-func (b *Bot) manualRepo() core.ManualReminderRepository {
-	if b.store == nil {
-		return nil
-	}
-	repo, _ := b.store.(core.ManualReminderRepository)
-	return repo
-}
-
 func (b *Bot) requireManual() *reply {
 	if b.manual != nil {
 		return nil
@@ -218,8 +185,7 @@ func (b *Bot) commandReminderPending(ctx context.Context) (reply, error) {
 			continue
 		}
 		rows = append(rows, []inlineButton{
-			{Text: "Paid " + string(occ.DueDate), CallbackData: callbackData(cbManualPaid, occ.ID)},
-			{Text: "Cancel " + string(occ.DueDate), CallbackData: callbackData(cbManualCancel, occ.ID)},
+			{Text: "Mark paid " + string(occ.DueDate), CallbackData: callbackData(cbManualPaid, occ.ID)},
 		})
 	}
 	return renderList("Pending manual occurrences", lines, &inlineKeyboard{InlineKeyboard: rows}), nil
@@ -240,19 +206,7 @@ func (b *Bot) commandReminderHistory(ctx context.Context, args []string) (reply,
 	if err != nil {
 		return reply{}, fmt.Errorf("list manual events: %w", err)
 	}
-	var dispatches []core.ManualDispatch
-	dispatchAvailable := false
-	if reader := b.dispatchReader(); reader != nil {
-		dispatchAvailable = true
-		dispatches, err = reader.ListPlanDispatches(ctx, plan.ID)
-		if err != nil {
-			return reply{}, fmt.Errorf("list manual dispatches: %w", err)
-		}
-	}
-	return reply{
-		parts:    formatManualHistoryAt(plan, events, dispatches, dispatchAvailable, b.location(ctx)),
-		keyboard: manualHistoryKeyboard(dispatches),
-	}, nil
+	return reply{parts: formatManualHistoryAt(plan, events, b.location(ctx))}, nil
 }
 
 func (b *Bot) commandCancelWizard(chatID, userID int64) reply {
@@ -338,8 +292,7 @@ func (b *Bot) manualPlanKeyboard(plan core.ManualPlan, occurrences []core.Manual
 		switch occ.Status {
 		case core.ManualOccurrencePending:
 			rows = append(rows, []inlineButton{
-				{Text: "Paid " + string(occ.DueDate), CallbackData: callbackData(cbManualPaid, occ.ID)},
-				{Text: "Cancel " + string(occ.DueDate), CallbackData: callbackData(cbManualCancel, occ.ID)},
+				{Text: "Mark paid " + string(occ.DueDate), CallbackData: callbackData(cbManualPaid, occ.ID)},
 			})
 		case core.ManualOccurrencePaid:
 			rows = append(rows, []inlineButton{
@@ -362,8 +315,7 @@ func (b *Bot) manualSummaryKeyboard(plan core.ManualPlan, occurrences []core.Man
 		switch occ.Status {
 		case core.ManualOccurrencePending:
 			rows = append(rows, []inlineButton{
-				{Text: "Paid " + string(occ.DueDate), CallbackData: callbackData(cbManualPaid, occ.ID)},
-				{Text: "Cancel " + string(occ.DueDate), CallbackData: callbackData(cbManualCancel, occ.ID)},
+				{Text: "Mark paid " + string(occ.DueDate), CallbackData: callbackData(cbManualPaid, occ.ID)},
 			})
 		case core.ManualOccurrencePaid:
 			rows = append(rows, []inlineButton{
@@ -375,27 +327,6 @@ func (b *Bot) manualSummaryKeyboard(plan core.ManualPlan, occurrences []core.Man
 		[]inlineButton{{Text: "View plan", CallbackData: callbackData(cbManualView, plan.ID)}},
 		[]inlineButton{{Text: "History", CallbackData: callbackData(cbManualHistory, plan.ID)}},
 	)
-	return &inlineKeyboard{InlineKeyboard: rows}
-}
-
-// manualHistoryKeyboard exposes dispatch detail for each listed dispatch.
-func manualHistoryKeyboard(dispatches []core.ManualDispatch) *inlineKeyboard {
-	if len(dispatches) == 0 {
-		return nil
-	}
-	rows := make([][]inlineButton, 0, len(dispatches))
-	for i, dispatch := range dispatches {
-		if i >= manualKeyboardOccurrenceLimit {
-			break
-		}
-		rows = append(rows, []inlineButton{{
-			Text:         "Dispatch " + string(dispatch.LocalDate),
-			CallbackData: callbackData(cbManualDispatch, dispatch.ID),
-		}})
-	}
-	if len(rows) == 0 {
-		return nil
-	}
 	return &inlineKeyboard{InlineKeyboard: rows}
 }
 
