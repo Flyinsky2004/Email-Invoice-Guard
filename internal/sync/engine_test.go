@@ -1,9 +1,11 @@
 package syncengine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -747,6 +749,264 @@ func TestReviewInvoiceSkipsAssetLinker(t *testing.T) {
 	if !ok || delivery.Payload.Kind != deliveryKindInvoice || delivery.Payload.InvoiceID != invoice.ID {
 		t.Fatalf("review invoice notification = %+v", delivery.Payload)
 	}
+}
+
+func TestDecodeErrorForcesReviewAndSkipsAssets(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	email := testEmail("m-1", testNow, "invoice", "residual decoded body")
+	email.Headers = map[string][]string{"x-invoice-guard-decode-error": {"mime-decode-failed"}}
+	source := singlePageSource(email)
+	parser := &fakeParser{fn: func(ctx context.Context, email core.NormalizedEmail) (*core.Invoice, error) {
+		return &core.Invoice{
+			ProviderID: "rfchost",
+			Number:     "INV-1",
+			DueDate:    "2026-11-20",
+			AmountDue:  core.Money{Minor: 684, Currency: "USD"},
+		}, nil
+	}}
+	linker := &fakeLinker{}
+	engine := newTestEngine(t, store, source, parser, linker)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	invoice, ok := store.invoiceByNumber("INV-1")
+	if !ok || invoice.Status != core.ReviewRequired {
+		t.Fatalf("damaged MIME invoice was not forced to review: %+v", invoice)
+	}
+	if len(invoice.ReviewReasons) == 0 {
+		t.Fatal("review reasons missing")
+	}
+	if linker.calls != 0 {
+		t.Fatalf("review invoice updated assets: linker calls = %d", linker.calls)
+	}
+	if store.reminderCount() != 0 {
+		t.Fatalf("review invoice created reminders: %d", store.reminderCount())
+	}
+
+	saved, _ := store.emailByProviderID("m-1")
+	if !strings.Contains(saved.TextBody, "residual decoded body") {
+		t.Fatalf("residual body lost: %q", saved.TextBody)
+	}
+	delivery, ok := store.deliveryForEmail(saved.InternalEmailID)
+	if !ok || delivery.Payload.Kind != deliveryKindInvoice {
+		t.Fatalf("unexpected delivery %+v", delivery.Payload)
+	}
+	failures := store.failuresList()
+	if len(failures) != 1 {
+		t.Fatalf("failures = %+v", failures)
+	}
+	if failures[0].EmailID != saved.InternalEmailID || failures[0].ProviderID != "rfchost" {
+		t.Fatalf("failure identity = %+v", failures[0])
+	}
+	if !strings.Contains(failures[0].Reason, "mime_decode_error") {
+		t.Fatalf("failure reason = %q", failures[0].Reason)
+	}
+}
+
+func TestDecodeErrorOrdinaryMailStillDelivered(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	body := strings.Repeat("ordinary full body ", 999) + "end"
+	email := testEmail("m-1", testNow, "hello", body)
+	email.Headers = map[string][]string{"X-Invoice-Guard-Decode-Error": {"read-failed"}}
+	source := singlePageSource(email)
+	linker := &fakeLinker{}
+	engine := newTestEngine(t, store, source, &fakeParser{}, linker)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	saved, _ := store.emailByProviderID("m-1")
+	if saved.TextBody != body {
+		t.Fatalf("ordinary body changed or truncated: got %d bytes, want %d", len(saved.TextBody), len(body))
+	}
+	delivery, ok := store.deliveryForEmail(saved.InternalEmailID)
+	if !ok || delivery.Payload.Kind != deliveryKindEmail {
+		t.Fatalf("ordinary mail not delivered: %+v", delivery.Payload)
+	}
+	if store.invoiceCount() != 0 || linker.calls != 0 || store.reminderCount() != 0 {
+		t.Fatalf("ordinary mail created billing work: invoices=%d linker=%d reminders=%d",
+			store.invoiceCount(), linker.calls, store.reminderCount())
+	}
+	if failures := store.failuresList(); len(failures) != 0 {
+		t.Fatalf("ordinary mail recorded parse failure: %+v", failures)
+	}
+}
+
+func TestNoDecodeWarningKeepsInvoicePending(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	source := singlePageSource(testEmail("m-1", testNow, "invoice", "clean body"))
+	parser := &fakeParser{fn: func(ctx context.Context, email core.NormalizedEmail) (*core.Invoice, error) {
+		return &core.Invoice{
+			ProviderID: "rfchost",
+			Number:     "INV-1",
+			DueDate:    "2026-11-20",
+			AmountDue:  core.Money{Minor: 684, Currency: "USD"},
+		}, nil
+	}}
+	linker := &fakeLinker{}
+	engine := newTestEngine(t, store, source, parser, linker)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	invoice, ok := store.invoiceByNumber("INV-1")
+	if !ok || invoice.Status != core.PendingConfirmation {
+		t.Fatalf("clean invoice status = %+v", invoice)
+	}
+	if linker.calls != 1 {
+		t.Fatalf("clean invoice did not update assets: linker calls = %d", linker.calls)
+	}
+	if failures := store.failuresList(); len(failures) != 0 {
+		t.Fatalf("clean mail recorded parse failure: %+v", failures)
+	}
+}
+
+func TestFolderRefreshDiscoversNewCustomFolder(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	if err := store.SaveFolder(context.Background(), core.MailFolder{
+		ID: "inbox", AccountID: "acc", Name: "Inbox", Role: "inbox", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source := &fakeSource{
+		typ: core.Microsoft,
+		folders: []core.MailFolder{
+			{ID: "inbox", Name: "Inbox", Role: "inbox"},
+			{ID: "sent", Name: "Sent Items", Role: "sent"},
+			{ID: "custom", Name: "Invoices", Role: "custom"},
+		},
+	}
+	engine := newTestEngine(t, store, source, &fakeParser{}, nil)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	folders := folderMap(store.folderList("acc"))
+	if !folders["inbox"].Enabled {
+		t.Fatal("stored Inbox preference lost")
+	}
+	if folders["sent"].Enabled || folders["custom"].Enabled {
+		t.Fatalf("new non-Inbox folders should default disabled: %+v", folders)
+	}
+	custom, ok := folders["custom"]
+	if !ok {
+		t.Fatal("new custom folder was not discovered")
+	}
+
+	custom.Enabled = true
+	if err := store.SaveFolder(context.Background(), custom); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	_, _, seen := source.stats()
+	if !containsString(seen, "custom") {
+		t.Fatalf("enabled custom folder was not synced: %v", seen)
+	}
+	if containsString(seen, "sent") {
+		t.Fatalf("disabled folder was fetched: %v", seen)
+	}
+}
+
+func TestFolderRefreshPreservesUserSelections(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	if err := store.SaveFolder(context.Background(), core.MailFolder{
+		ID: "inbox", AccountID: "acc", Name: "Inbox", Role: "inbox", Enabled: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveFolder(context.Background(), core.MailFolder{
+		ID: "custom", AccountID: "acc", Name: "Invoices", Role: "custom", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source := &fakeSource{
+		typ: core.Microsoft,
+		folders: []core.MailFolder{
+			{ID: "inbox", Name: "Inbox", Role: "inbox"},
+			{ID: "custom", Name: "Invoices", Role: "custom"},
+		},
+	}
+	engine := newTestEngine(t, store, source, &fakeParser{}, nil)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	folders := folderMap(store.folderList("acc"))
+	if folders["inbox"].Enabled {
+		t.Fatal("disabled Inbox was re-enabled by discovery")
+	}
+	if !folders["custom"].Enabled {
+		t.Fatal("enabled custom folder preference was lost")
+	}
+	calls, _, seen := source.stats()
+	if calls != 1 || len(seen) != 1 || seen[0] != "custom" {
+		t.Fatalf("unexpected sync calls=%d folders=%v", calls, seen)
+	}
+}
+
+func TestFolderDiscoveryFailureKeepsKnownFolders(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	if err := store.SaveFolder(context.Background(), core.MailFolder{
+		ID: "inbox", AccountID: "acc", Name: "Inbox", Role: "inbox", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	source := &fakeSource{
+		typ: core.Microsoft,
+		listFn: func(account core.MailAccount) ([]core.MailFolder, error) {
+			return nil, errors.New("token=SUPERSECRET")
+		},
+		syncFn: func(ctx context.Context, account core.MailAccount, folder core.MailFolder, cursor core.SyncCursor) (core.SyncBatch, error) {
+			return core.SyncBatch{Emails: []core.NormalizedEmail{testEmail("m-1", testNow, "hello", "body")}}, nil
+		},
+	}
+	engine := New(store, map[core.ProviderType]core.MailSource{core.Microsoft: source}, &fakeParser{}, nil, core.Config{SyncInterval: time.Minute}, slog.New(slog.NewTextHandler(&logs, nil)))
+	engine.now = func() time.Time { return testNow }
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("discovery failure blocked known folders: %v", err)
+	}
+	if store.emailCount() != 1 {
+		t.Fatalf("known Inbox was not synced: %d emails", store.emailCount())
+	}
+	_, _, seen := source.stats()
+	if len(seen) != 1 || seen[0] != "inbox" {
+		t.Fatalf("unexpected folders synced: %v", seen)
+	}
+	output := logs.String()
+	if !strings.Contains(output, "folder discovery failed") || !strings.Contains(output, "provider_error") {
+		t.Fatalf("missing discovery diagnostic: %q", output)
+	}
+	if strings.Contains(output, "SUPERSECRET") {
+		t.Fatalf("secret leaked into diagnostic: %q", output)
+	}
+}
+
+func folderMap(folders []core.MailFolder) map[string]core.MailFolder {
+	out := make(map[string]core.MailFolder, len(folders))
+	for _, folder := range folders {
+		out[folder.ID] = folder
+	}
+	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBaselineAtChangeRebuildsBaseline(t *testing.T) {

@@ -12,29 +12,53 @@ import (
 
 const baselineRecentWindow = 24 * time.Hour
 
-// accountFolders returns stored folders when present (preserving explicit
-// enabled preferences) and otherwise discovers them, enabling Inbox only.
+// accountFolders refreshes the available folder catalog on every sync while
+// preserving stored enabled preferences. Newly discovered folders are opt-in
+// except Inbox. If discovery fails but folders are already known, the sync
+// continues with the stored catalog and records a sanitized diagnostic.
 func (e *Engine) accountFolders(ctx context.Context, source core.MailSource, account core.MailAccount) ([]core.MailFolder, error) {
 	stored, err := e.store.ListFolders(ctx, account.ID)
 	if err != nil && !errors.Is(err, core.ErrNotFound) {
 		return nil, storageError()
 	}
-	if len(stored) > 0 {
+
+	discovered, discoverErr := source.ListFolders(ctx, account)
+	if discoverErr != nil {
+		if len(stored) == 0 {
+			return nil, providerError(discoverErr)
+		}
+		e.logger.Warn("folder discovery failed; continuing with stored folders",
+			"account_id", account.ID, "code", safeCode(providerError(discoverErr)))
 		return stored, nil
 	}
 
-	discovered, err := source.ListFolders(ctx, account)
-	if err != nil {
-		return nil, providerError(err)
+	byID := make(map[string]core.MailFolder, len(stored)+len(discovered))
+	order := make([]string, 0, len(stored)+len(discovered))
+	for _, folder := range stored {
+		if _, ok := byID[folder.ID]; !ok {
+			order = append(order, folder.ID)
+		}
+		byID[folder.ID] = folder
 	}
-	folders := make([]core.MailFolder, 0, len(discovered))
 	for _, folder := range discovered {
 		folder.AccountID = account.ID
-		folder.Enabled = isInboxFolder(folder)
+		if existing, ok := byID[folder.ID]; ok {
+			// Never overwrite an explicit user choice (including a disabled
+			// Inbox); refresh only descriptive metadata.
+			folder.Enabled = existing.Enabled
+		} else {
+			folder.Enabled = isInboxFolder(folder)
+			order = append(order, folder.ID)
+		}
+		byID[folder.ID] = folder
 		if err := e.store.SaveFolder(ctx, folder); err != nil {
 			return nil, storageError()
 		}
-		folders = append(folders, folder)
+	}
+
+	folders := make([]core.MailFolder, 0, len(order))
+	for _, id := range order {
+		folders = append(folders, byID[id])
 	}
 	return folders, nil
 }

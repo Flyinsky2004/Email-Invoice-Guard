@@ -21,7 +21,7 @@ const (
 type preparedEmail struct {
 	email      core.NormalizedEmail
 	invoice    *core.Invoice
-	parseErr   error
+	diagnostic string
 	historical bool
 }
 
@@ -56,22 +56,33 @@ func (e *Engine) processPage(ctx context.Context, account core.MailAccount, fold
 		email.SyncMetadata.Phase = phase
 
 		var invoice *core.Invoice
-		var parseErr error
+		diagnostic := ""
+		decodeErr := decodeErrorValue(email.Headers)
 		if !historical && e.parsers != nil {
+			var parseErr error
 			invoice, parseErr = e.parsers.Parse(ctx, email)
 			if errors.Is(parseErr, core.ErrNoMatch) {
 				parseErr = nil
 				invoice = nil
 			}
+
+			var diagnostics []string
+			if parseErr != nil {
+				diagnostics = append(diagnostics, sanitizeReason(parseErr))
+			}
+			if decodeErr != "" && (invoice != nil || parseErr != nil) {
+				diagnostics = append(diagnostics, "mime_decode_error: "+sanitizeText(decodeErr))
+			}
+
 			if invoice != nil {
 				invoice.AccountID = account.ID
-				if parseErr != nil {
-					// A parser that returns an invoice together with an error
-					// has not sufficiently validated it: never default to
-					// PENDING_CONFIRMATION.
+				if len(diagnostics) > 0 {
+					// A damaged MIME body or parser error means the residual
+					// text is not sufficiently validated, even when it parses
+					// as a valid invoice.
 					invoice.Status = core.ReviewRequired
-					if len(invoice.ReviewReasons) == 0 {
-						invoice.ReviewReasons = []string{sanitizeReason(parseErr)}
+					for _, reason := range diagnostics {
+						invoice.ReviewReasons = appendReviewReason(invoice.ReviewReasons, reason)
 					}
 				} else if invoice.Status == "" {
 					invoice.Status = core.PendingConfirmation
@@ -81,19 +92,20 @@ func (e *Engine) processPage(ctx context.Context, account core.MailAccount, fold
 				}
 				invoice.UpdatedAt = now
 			}
-			if parseErr != nil {
-				reason := sanitizeReason(parseErr)
+
+			if len(diagnostics) > 0 {
+				diagnostic = sanitizeText(strings.Join(diagnostics, "; "))
 				if email.Headers == nil {
 					email.Headers = map[string][]string{}
 				}
-				email.Headers["X-Parse-Failure"] = []string{reason}
+				email.Headers["X-Parse-Failure"] = []string{diagnostic}
 			}
 		}
 
 		prepared = append(prepared, preparedEmail{
 			email:      email,
 			invoice:    invoice,
-			parseErr:   parseErr,
+			diagnostic: diagnostic,
 			historical: historical,
 		})
 	}
@@ -122,7 +134,7 @@ func (e *Engine) processPage(ctx context.Context, account core.MailAccount, fold
 				// advances, but no second notification or billing task is made.
 				continue
 			}
-			if item.parseErr != nil {
+			if item.diagnostic != "" {
 				providerID := ""
 				if item.invoice != nil {
 					providerID = item.invoice.ProviderID
@@ -130,7 +142,7 @@ func (e *Engine) processPage(ctx context.Context, account core.MailAccount, fold
 				if providerID == "" {
 					providerID = item.email.Classification.ProviderID
 				}
-				if err := tx.RecordParseFailure(ctx, saved.InternalEmailID, providerID, sanitizeReason(item.parseErr)); err != nil {
+				if err := tx.RecordParseFailure(ctx, saved.InternalEmailID, providerID, item.diagnostic); err != nil {
 					return storageError()
 				}
 			}
@@ -203,8 +215,13 @@ func sanitizeReason(err error) string {
 	if err == nil {
 		return ""
 	}
+	return sanitizeText(err.Error())
+}
+
+// sanitizeText bounds a diagnostic and removes control characters.
+func sanitizeText(text string) string {
 	var b strings.Builder
-	for _, r := range err.Error() {
+	for _, r := range text {
 		switch {
 		case r == '\n' || r == '\r' || r == '\t':
 			b.WriteByte(' ')
@@ -223,4 +240,35 @@ func sanitizeReason(err error) string {
 		reason = "parse_failed"
 	}
 	return reason
+}
+
+// decodeErrorHeaderName is set by the provider layer when MIME decoding
+// failed but raw/partial content was retained.
+const decodeErrorHeaderName = "X-Invoice-Guard-Decode-Error"
+
+// decodeErrorValue reads the decode-error marker case-insensitively.
+func decodeErrorValue(headers map[string][]string) string {
+	for key, values := range headers {
+		if !strings.EqualFold(key, decodeErrorHeaderName) {
+			continue
+		}
+		for _, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func appendReviewReason(reasons []string, reason string) []string {
+	if reason == "" {
+		return reasons
+	}
+	for _, existing := range reasons {
+		if existing == reason {
+			return reasons
+		}
+	}
+	return append(reasons, reason)
 }
