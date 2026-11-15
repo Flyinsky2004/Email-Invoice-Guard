@@ -1,0 +1,15 @@
+ok  	email-invoice-guard/internal/assets	(cached)
+ok  	email-invoice-guard/internal/core	(cached)
+ok  	email-invoice-guard/internal/httpserver/oauth	(cached)
+ok  	email-invoice-guard/internal/invoice/lifecycle	(cached)
+ok  	email-invoice-guard/internal/invoice/parser	(cached)
+ok  	email-invoice-guard/internal/mailproc	(cached)
+ok  	email-invoice-guard/internal/providers/imap	(cached)
+?   	email-invoice-guard/internal/providers/imap/imaptest	[no test files]
+ok  	email-invoice-guard/internal/providers/microsoft	(cached)
+ok  	email-invoice-guard/internal/providers/qq	(cached)
+ok  	email-invoice-guard/internal/reminder	(cached)
+ok  	email-invoice-guard/internal/storage	(cached)
+ok  	email-invoice-guard/internal/sync	(cached)
+ok  	email-invoice-guard/internal/telegram	1.574s
+ok  	email-invoice-guard/tests/integration	(cached)

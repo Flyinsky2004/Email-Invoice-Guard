@@ -1,0 +1,10 @@
+Rebasing (1/2)
+Rebasing (2/2)
+Successfully rebased and updated refs/heads/task/T03-mail-pipeline.
+Merge made by the 'ort' strategy.
+ internal/sync/engine_test.go | 260 +++++++++++++++++++++++++++++++++++++++++++
+ internal/sync/fakes_test.go  |  13 +++
+ internal/sync/folder.go      |  42 +++++--
+ internal/sync/process.go     |  78 ++++++++++---
+ 4 files changed, 369 insertions(+), 24 deletions(-)
+MERGED T03

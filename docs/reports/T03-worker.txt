@@ -2,7 +2,9 @@
 
 Branch: `task/T03-mail-pipeline`
 Worktree: `/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t03`
-Final commit (HEAD): `03f831a9e9472d820b23b6d838e54196b53e4d70` — `fix(sync): ignore stale IMAP BaselineAt on UID reset`
+Final commit (HEAD): `597b868a75360c746be380b13e55dc707342bd87` — `feat(sync): refresh folder catalog on every sync`
+Damaged-MIME commit: `5cbd1b4` — `fix(sync): force review for damaged MIME invoices`
+IMAP-baseline commit: `03f831a` — `fix(sync): ignore stale IMAP BaselineAt on UID reset`
 Baseline-rebuild commit: `6737db1` — `fix(sync): honor provider baseline rebuilds atomically`
 Asset-safety commit: `a1e16ee` — `fix(sync): skip asset linker for review invoices`
 Review-fix commit: `5acdd4e` — `fix(sync): address T03 review findings`
@@ -38,7 +40,7 @@ No changes to `internal/core/**`, `go.mod`, `go.sum`, docs, SPEC.md, or other wo
 - `SyncAccount`: keyed per-account lock shared by manual and periodic calls; lock acquisition is bounded (30s default, `engine.lockWait` overridable in tests) and honors context cancellation so shutdown is never blocked.
 - `LastError`: persisted by re-reading the live account inside a transaction and updating only `LastError`/`UpdatedAt`; a stale in-flight snapshot can never re-enable a concurrently removed/disabled account. The write uses `context.WithoutCancel` plus a 5s deadline.
 - Baseline: first sync persists `BaselineAt` cursor before any remote call; cutoff `BaselineAt-24h`; phases `historical` (no outbox, no invoice), `recent_initial`, `bootstrap_live`, then `incremental`.
-- Folders: discovered only when none stored; discovered Inbox enabled, others disabled; stored explicit enabled preferences preserved; disabled folders never fetched.
+- Folders: the catalog is refreshed on every sync. New folders are discovered and persisted; new non-Inbox folders default disabled; stored explicit enabled preferences (including a disabled Inbox) are never overwritten; disabled folders are never fetched. If discovery fails while folders are already known, the sync continues with the stored catalog and logs a sanitized diagnostic.
 - Page processing: Normalize + Classify + parser outside transaction; before commit the live account is re-read and must still be enabled; transaction saves canonical email/identities, new valid/review invoice, assets via injected `linker.Reconcile(ctx, tx, invoice)`, exactly one delivery, and the cursor; rollback discards all page writes and leaves the pre-remote baseline cursor intact.
 - Delivery kinds follow the T07 contract: `email` for ordinary mail, `invoice` for invoice-linked mail. A new email referencing an existing invoice still gets an `invoice` notification pointing at that invoice, while the invoice's payment state is untouched and no duplicate invoice row is created.
 - Asset safety: only a newly created, sufficiently validated `PENDING_CONFIRMATION` invoice invokes `linker.Reconcile`. `REVIEW_REQUIRED` invoices never update asset last-invoice/service-period state automatically, but still receive an `invoice` notification and retain their original source email entry.
@@ -49,6 +51,7 @@ No changes to `internal/core/**`, `go.mod`, `go.sum`, docs, SPEC.md, or other wo
 - UIDVALIDITY change: rebuilds that folder's baseline before processing, so old mail is stored historical and deduped rather than replayed.
 - Baseline rebuild: an explicit `NextCursor.BaselineAt` change (Microsoft 410) or a UIDVALIDITY change starts a new baseline. The current page is classified against the new baseline and the new cursor is committed atomically with the page, never inheriting the old `BaselineComplete` flag; historical mail is not pushed.
 - IMAP baseline safety: when only UIDVALIDITY changes, the rebuilt baseline is `now`; a retained non-zero `NextCursor.BaselineAt` from IMAP is treated as stale and never used. IMAP `BaselineAt` stays engine-managed across pages, and a failed page transaction leaves the old cursor intact.
+- Damaged MIME safety: `X-Invoice-Guard-Decode-Error` is read case-insensitively. If a damaged body still yields an invoice, the invoice is forced to `REVIEW_REQUIRED`, a bounded parse failure is recorded with the vendor provider ID, and asset/reminder work is skipped. Ordinary mail carrying the same marker is still delivered in full.
 - `Run`: periodic loop, re-reads `sync_interval_seconds` between passes, falls back to `cfg.SyncInterval`, then 60s; returns nil on context cancellation.
 
 ## 3. Actual commands and results
@@ -69,7 +72,7 @@ $ go vet ./internal/mailproc/... ./internal/sync/...
 
 $ go test -race -cover ./internal/mailproc/... ./internal/sync/...
 ok  	email-invoice-guard/internal/mailproc	(cached)	coverage: 92.0% of statements
-ok  	email-invoice-guard/internal/sync	1.552s	coverage: 83.6% of statements
+ok  	email-invoice-guard/internal/sync	1.547s	coverage: 84.0% of statements
 
 $ git status --short   (before final commit)
 M  internal/sync/engine.go
@@ -96,11 +99,19 @@ $ git commit -m "fix(sync): ignore stale IMAP BaselineAt on UID reset"
 [task/T03-mail-pipeline 03f831a] fix(sync): ignore stale IMAP BaselineAt on UID reset
 2 files changed, 115 insertions(+), 7 deletions(-)
 
+$ git commit -m "fix(sync): force review for damaged MIME invoices"
+[task/T03-mail-pipeline 5cbd1b4] fix(sync): force review for damaged MIME invoices
+3 files changed, 190 insertions(+), 15 deletions(-)
+
+$ git commit -m "feat(sync): refresh folder catalog on every sync"
+[task/T03-mail-pipeline 597b868] feat(sync): refresh folder catalog on every sync
+2 files changed, 179 insertions(+), 9 deletions(-)
+
 $ git rev-parse HEAD
-03f831a9e9472d820b23b6d838e54196b53e4d70
+597b868a75360c746be380b13e55dc707342bd87
 ```
 
-Test count: 14 top-level tests in `internal/mailproc` (including 6 classification subtests) and 28 top-level tests in `internal/sync` — 42 total, above the 18+ requirement.
+Test count: 14 top-level tests in `internal/mailproc` (including 6 classification subtests) and 34 top-level tests in `internal/sync` — 48 total, above the 18+ requirement.
 
 ## 4. Acceptance criteria matrix
 
@@ -116,6 +127,7 @@ Test count: 14 top-level tests in `internal/mailproc` (including 6 classificatio
 | LastError write cannot re-enable a concurrently disabled account | SATISFIED | `TestPersistLastErrorPreservesDisabledState` (transactional re-read) |
 | Baseline cursor persisted before remote access | SATISFIED | `TestFirstSyncBaselinePhases`, `TestTransactionRollbackRestoresCursor` |
 | Folder discovery Inbox-only; explicit prefs preserved; disabled folder not fetched | SATISFIED | `TestFolderDiscoveryEnablesInboxOnly`, `TestDisabledFolderNotFetched` |
+| Folder catalog refreshed each sync; new custom folders discoverable; existing prefs preserved; discovery failure keeps known folders | SATISFIED | `TestFolderRefreshDiscoversNewCustomFolder`, `TestFolderRefreshPreservesUserSelections`, `TestFolderDiscoveryFailureKeepsKnownFolders` |
 | Normalize/Classify/parser outside transaction; atomic email/invoice/assets/delivery/cursor | SATISFIED | `processPage`; `TestTransactionRollbackRestoresCursor` |
 | Enabled state re-checked before each page commit | SATISFIED | `TestPageCommitRechecksEnabled` |
 | Parser failure diagnostic, mail delivered, cursor advances | SATISFIED | `TestParserFailureStillDelivers` |
@@ -130,6 +142,7 @@ Test count: 14 top-level tests in `internal/mailproc` (including 6 classificatio
 | UID reset treated safely, baseline rebuilt | SATISFIED | `TestUIDValidityResetRebuildsBaseline` |
 | Provider BaselineAt/UIDVALIDITY rebuild starts a new baseline and commits it atomically | SATISFIED | `TestBaselineAtChangeRebuildsBaseline`, `TestUIDValidityResetPersistsBaselineWhilePaging` |
 | UID reset ignores stale non-zero IMAP BaselineAt; >24h historical mail stays out of outbox; rollback keeps old cursor | SATISFIED | `TestUIDValidityResetWithStaleBaselineAt`, `TestUIDValidityResetRollbackKeepsOldCursor` |
+| Damaged MIME marker forces review, records failure, skips assets/reminders; ordinary mail still delivered in full | SATISFIED | `TestDecodeErrorForcesReviewAndSkipsAssets`, `TestDecodeErrorOrdinaryMailStillDelivered`, `TestNoDecodeWarningKeepsInvoicePending` |
 | Sync interval setting read between passes; default 60s; graceful cancellation | SATISFIED | `TestSyncIntervalSetting`, `TestRunStopsOnContextCancellation` |
 | 18+ meaningful tests, race clean, vet clean | SATISFIED | 37 tests; `go test -race`, `go vet` |
 | Only owned paths committed; dependencies untouched | SATISFIED | `git diff --cached --name-only` shows only `internal/sync/**`, `LESSONS.md` for the fix commit; implementation commit touched only `internal/mailproc/**`, `internal/sync/**`, `LESSONS.md` |

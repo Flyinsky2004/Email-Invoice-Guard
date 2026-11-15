@@ -2,9 +2,11 @@ T02 — QQ TLS IMAP provider + one-time HTTPS onboarding
 =======================================================
 
 Branch: task/T02-qq-imap-provider
-Latest commit: 6c22e186101097c60a4eef4bf71412ebe756d7db
+Latest commit: 2f178ae5d307bf61691db8ead12207ec9056361a
+  fix(qq-imap-provider): keep non-INBOX folder IDs case-sensitive
+Previous commit: 5929465
   fix(qq-imap-provider): preserve undecodable text and join MIME parts strictly
-Initial commit: 53f38047ee39a74f62a843719f7a188dc23b7af0
+Initial commit: a08f45a
   feat(qq-imap-provider): implement T02 module and tests
 
 Modified files (committed, all inside the allowlist plus LESSONS.md)
@@ -50,7 +52,10 @@ Source.ListFolders
   - LIST "" "*", skips \Noselect/\NonExistent, maps SPECIAL-USE roles
     (inbox/sent/drafts/trash/junk/archive/all/flagged/important) with a
     conservative name fallback, enables INBOX only.
-  - Stable 32-hex folder IDs derived from account ID + mailbox name.
+  - Stable 32-hex folder IDs derived from account ID + mailbox name. Only
+    INBOX is normalized case-insensitively (RFC 9051); every other mailbox
+    keeps the server's original case, so "Foo" and "foo" remain distinct
+    mailboxes with distinct IDs and UID state.
 
 Source.Sync
   - SELECT snapshots UIDVALIDITY/UIDNEXT (STATUS fallback).
@@ -111,9 +116,9 @@ qq.NewOnboarding(repo, cfg, source) *Onboarding
 
 Tests
 -----
-73 tests total (51 imap, 22 qq), using a real in-process TLS IMAP server
+75 tests total (53 imap, 22 qq), using a real in-process TLS IMAP server
 (github.com/emersion/go-imap/v2/imapserver) and fake repositories that embed
-core.Repository/core.Store. Coverage: imap 84.8%, qq 83.6%.
+core.Repository/core.Store. Coverage: imap 84.9%, qq 83.6%.
 
 Covered scenarios include: default config; address/domain and host allowlists;
 empty/control-character codes; invalid authorization code; untrusted TLS cert;
@@ -140,6 +145,8 @@ Acceptance-rework regressions added:
   - Body beginning with a Content-Type line: never mistaken for MIME headers;
     full body preserved.
   - joinMIMEPart always prepends headers.
+  - LIST returns "Foo" and "foo" as distinct folders with distinct IDs; only
+    INBOX is case-insensitive.
 
 Actual commands and results
 ---------------------------
@@ -160,8 +167,8 @@ ok  email-invoice-guard/internal/providers/imap  2.176s
 ok  email-invoice-guard/internal/providers/qq    1.445s
 
 $ go test -cover ./internal/providers/imap/ ./internal/providers/qq/ -count=1
-ok  email-invoice-guard/internal/providers/imap  0.985s  coverage: 84.8% of statements
-ok  email-invoice-guard/internal/providers/qq    0.388s  coverage: 83.6% of statements
+ok  email-invoice-guard/internal/providers/imap  0.922s  coverage: 84.9% of statements
+ok  email-invoice-guard/internal/providers/qq    0.362s  coverage: 83.6% of statements
 
 $ go build ./...
 (success)
@@ -176,11 +183,8 @@ $ git diff --check e67852b...HEAD
 (exit 0; the LESSONS.md EOF blank line is fixed)
 
 $ git diff-tree --no-commit-id --name-only -r HEAD
-LESSONS.md
-internal/providers/imap/message.go
-internal/providers/imap/message_test.go
-internal/providers/imap/sync.go
-internal/providers/imap/sync_test.go
+internal/providers/imap/folders.go
+internal/providers/imap/folders_test.go
 
 Unresolved issues / dependency requests
 ---------------------------------------
@@ -222,4 +226,6 @@ Acceptance criteria
     append-only LESSONS.md committed.
 [x] Acceptance-rework items fixed: no silent text loss, strict MIME joining,
     LESSONS.md EOF format.
+[x] Integration finding fixed: only INBOX folder IDs are case-insensitive;
+    "Foo" and "foo" keep distinct IDs/UID state (LIST regression added).
 [x] result.txt and commits supplied; branch not pushed/merged/rebase.

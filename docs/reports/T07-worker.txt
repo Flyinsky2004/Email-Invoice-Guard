@@ -1,10 +1,11 @@
 T07 — Telegram worker completion report
 =======================================
 
-Commits (branch task/T07-telegram):
-- 2cd4f5e2a9bd6e8eca1d1eea79de1dc940a885d5  feat(telegram): implement T07 module and tests
-- a0bd66268cea6235d3b75232d2bfd94d33ef44fc  fix(telegram): align trusted invoice URL and unblock polling
-- 5e1e4d8a61aa9e96cbaf2987ac6bbc2428e8eeb7  fix(telegram): retry transient reads and prefer payload mail
+Commits (branch task/T07-telegram, current rebased history):
+- 2d73076  feat(telegram): implement T07 module and tests
+- c675333  fix(telegram): align trusted invoice URL and unblock polling
+- 0789470  fix(telegram): retry transient reads and prefer payload mail
+- feddfdf  feat(telegram): list folders in settings
 
 Worktree: /Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t07
 
@@ -28,7 +29,7 @@ Worktree: /Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t07
 - internal/telegram/delivery.go   DeliverOnce: claim, stale-reminder skip, pre-send
                                   reminder re-check after rate limiting, per-part
                                   recording, partial failure, UNKNOWN classification.
-- internal/telegram/*_test.go     79 test functions with embedded core.Store fake and
+- internal/telegram/*_test.go     82 test functions with embedded core.Store fake and
                                   mock Telegram HTTP server.
 - LESSONS.md                      Appended T07 lessons (append-only).
 
@@ -84,6 +85,10 @@ No changes to internal/core, go.mod, go.sum, docs, SPEC.md, or other worktrees.
   disables via RemoveAccount. /settings validates IANA timezone, HH:MM reminder,
   positive bounded sync seconds, and folder on/off after checking account ownership
   and folder existence, persisting through SetSetting/SaveFolder.
+- Folder discoverability: /settings folder <accountID> lists each folder's name, ID
+  and enabled state after the owner check, and tells the user to run /sync first when
+  no folders are stored. The three-argument on/off form is unchanged. /help and the
+  /settings summary show both forms.
 - Payment flow: the initial "Mark paid" button only opens a second confirmation;
   Confirm/Undo/Cancel run only from their callbacks. Replays are idempotent. Stored
   invoice messages are edited after transitions; edit failures are logged and never
@@ -104,14 +109,14 @@ $ gofmt -w internal/telegram
 $ go vet ./internal/telegram/
   (no output; pass)
 $ go test -count=1 ./internal/telegram/
-  ok  	email-invoice-guard/internal/telegram	1.600s
+  ok  	email-invoice-guard/internal/telegram	1.332s
 $ go test -race -count=1 ./internal/telegram/
-  ok  	email-invoice-guard/internal/telegram	2.647s
+  ok  	email-invoice-guard/internal/telegram	2.405s
 $ go test -cover -count=1 ./internal/telegram/
-  ok  	email-invoice-guard/internal/telegram	1.590s	coverage: 82.0% of statements
+  ok  	email-invoice-guard/internal/telegram	1.364s	coverage: 82.0% of statements
 $ go test -list '^Test' ./internal/telegram/ | grep -c '^Test'
-  79 test functions
-$ git diff --name-only HEAD~3 HEAD
+  82 test functions
+$ git diff --name-only HEAD~4 HEAD
   LESSONS.md and internal/telegram/* only
 $ git status --short
   ?? .omc/   (pre-existing untracked, not committed)
@@ -130,6 +135,9 @@ $ git status --short
 - All required commands with meaningful results; bounded lists + full-item callbacks;
   /add onboarding; /remove soft disable with confirmation; /settings validation and
   persistence; /assets provider filter and history: SATISFIED.
+- Folder discoverability: /settings folder <accountID> lists name/ID/enabled after the
+  owner check, an empty list points at /sync, and the on/off form still works:
+  SATISFIED (list, empty, foreign-owner, and existing on/off tests).
 - /sync asynchronous, immediate reply, duplicate-run guard, cancellation and shutdown
   management: SATISFIED (background sync and Run-cancellation tests).
 - FormatEmail completeness, HTML-only conversion, escaping, <=4096 UTF-16 chunking,

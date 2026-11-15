@@ -1,0 +1,20 @@
+Auto-merging LESSONS.md
+CONFLICT (content): Merge conflict in LESSONS.md
+Rebasing (1/1)
+error: could not apply feddfdf... feat(telegram): list folders in settings
+hint: Resolve all conflicts manually, mark them as resolved with
+hint: "git add/rm <conflicted_files>", then run "git rebase --continue".
+hint: You can instead skip this commit: run "git rebase --skip".
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply feddfdf... # feat(telegram): list folders in settings
+[detached HEAD 5bde8a7] feat(telegram): list folders in settings
+ 4 files changed, 98 insertions(+), 12 deletions(-)
+Successfully rebased and updated refs/heads/task/T07-telegram.
+Merge made by the 'ort' strategy.
+ LESSONS.md                         |  6 +++++
+ internal/telegram/commands.go      |  4 ++-
+ internal/telegram/commands_test.go | 51 +++++++++++++++++++++++++++++++++++++-
+ internal/telegram/settings.go      | 49 ++++++++++++++++++++++++++++--------
+ 4 files changed, 98 insertions(+), 12 deletions(-)
+MERGED T07

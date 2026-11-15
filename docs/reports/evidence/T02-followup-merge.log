@@ -1,0 +1,7 @@
+Rebasing (1/1)
+Successfully rebased and updated refs/heads/task/T02-qq-imap-provider.
+Merge made by the 'ort' strategy.
+ internal/providers/imap/folders.go      | 10 ++++++--
+ internal/providers/imap/folders_test.go | 42 +++++++++++++++++++++++++++++++++
+ 2 files changed, 50 insertions(+), 2 deletions(-)
+MERGED T02

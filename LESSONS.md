@@ -219,3 +219,9 @@
 - 修复 commit：本次 T07 可操作性提交（SHA 见 result.txt）。
 - Done right: /settings folder <accountID> 校验 owner 后列出 name/id/enabled；无目录提示先 /sync；help 与 settings 同步显示用法；mock 测试覆盖列表、空目录、异 owner。
 - Seen 1× (2026-11-15).
+
+**远程文件夹发现完成后，在写事务内重读用户的启用选择。**
+- 集成回归 TestConcurrentFolderPreferenceSurvivesDiscovery：模拟 LIST 期间用户关闭 Inbox，旧实现将 Enabled 恢复为 true；真实 SQLite 测试已复现。
+- 修复的 commit：c90f9286735c5bd6e30bb6a7f1912a31c769ecc4。
+- Done right: 远程 I/O 在事务外，随后在同一事务读取最新目录偏好并保存描述字段，回归及 race 测试通过。
+- Seen 1× (2026-11-15).
