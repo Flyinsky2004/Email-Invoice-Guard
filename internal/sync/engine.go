@@ -17,14 +17,16 @@ import (
 )
 
 const (
-	maxParallelSyncs    = 4
-	maxPagesPerFolder   = 10000
-	defaultSyncInterval = 60 * time.Second
+	maxParallelSyncs       = 4
+	maxPagesPerFolder      = 10000
+	defaultSyncInterval    = 60 * time.Second
+	accountLockWaitTimeout = 30 * time.Second
+	lastErrorWriteTimeout  = 5 * time.Second
 )
 
 type accountLock struct {
-	mu   sync.Mutex
-	refs int
+	token chan struct{}
+	refs  int
 }
 
 // Engine owns the synchronization pipeline. It is safe for concurrent use:
@@ -39,6 +41,8 @@ type Engine struct {
 
 	now func() time.Time
 
+	lockWait time.Duration
+
 	locksMu sync.Mutex
 	locks   map[string]*accountLock
 }
@@ -52,14 +56,15 @@ func New(store core.Store, sources map[core.ProviderType]core.MailSource, parser
 		sources = map[core.ProviderType]core.MailSource{}
 	}
 	return &Engine{
-		store:   store,
-		sources: sources,
-		parsers: parsers,
-		linker:  linker,
-		cfg:     cfg,
-		logger:  logger,
-		now:     time.Now,
-		locks:   map[string]*accountLock{},
+		store:    store,
+		sources:  sources,
+		parsers:  parsers,
+		linker:   linker,
+		cfg:      cfg,
+		logger:   logger,
+		now:      time.Now,
+		lockWait: accountLockWaitTimeout,
+		locks:    map[string]*accountLock{},
 	}
 }
 
@@ -112,7 +117,10 @@ func (e *Engine) SyncAll(ctx context.Context) error {
 // SyncAccount synchronizes a single account. Manual and periodic calls share
 // the same per-account lock, so they never overlap.
 func (e *Engine) SyncAccount(ctx context.Context, accountID string) error {
-	release := e.lockAccount(accountID)
+	release, err := e.lockAccount(ctx, accountID)
+	if err != nil {
+		return safeError(accountID, err)
+	}
 	defer release()
 
 	account, err := e.store.GetAccount(ctx, accountID)
@@ -124,11 +132,11 @@ func (e *Engine) SyncAccount(ctx context.Context, accountID string) error {
 	}
 
 	if err := e.syncAccount(ctx, account); err != nil {
-		e.persistLastError(ctx, account, safeCode(err))
+		e.persistLastError(ctx, account.ID, safeCode(err))
 		return safeError(accountID, err)
 	}
 	if account.LastError != "" {
-		e.persistLastError(ctx, account, "")
+		e.persistLastError(ctx, account.ID, "")
 	}
 	return nil
 }
@@ -181,6 +189,9 @@ func (e *Engine) syncAccount(ctx context.Context, account core.MailAccount) erro
 			continue
 		}
 		if err := e.syncFolder(ctx, source, account, folder); err != nil {
+			if errors.Is(err, errAccountDisabled) {
+				return nil
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -190,32 +201,57 @@ func (e *Engine) syncAccount(ctx context.Context, account core.MailAccount) erro
 	return errors.Join(errs...)
 }
 
-func (e *Engine) lockAccount(accountID string) func() {
+func (e *Engine) lockAccount(ctx context.Context, accountID string) (func(), error) {
 	e.locksMu.Lock()
 	lock := e.locks[accountID]
 	if lock == nil {
-		lock = &accountLock{}
+		lock = &accountLock{token: make(chan struct{}, 1)}
 		e.locks[accountID] = lock
 	}
 	lock.refs++
 	e.locksMu.Unlock()
 
-	lock.mu.Lock()
-	return func() {
-		lock.mu.Unlock()
-		e.locksMu.Lock()
-		lock.refs--
-		if lock.refs == 0 {
-			delete(e.locks, accountID)
-		}
-		e.locksMu.Unlock()
+	waitCtx, cancel := context.WithTimeout(ctx, e.lockWait)
+	defer cancel()
+	select {
+	case lock.token <- struct{}{}:
+		return func() {
+			<-lock.token
+			e.releaseAccountLock(accountID, lock)
+		}, nil
+	case <-waitCtx.Done():
+		e.releaseAccountLock(accountID, lock)
+		return nil, waitCtx.Err()
 	}
 }
 
-func (e *Engine) persistLastError(ctx context.Context, account core.MailAccount, code string) {
-	account.LastError = code
-	account.UpdatedAt = e.now().UTC()
-	if err := e.store.SaveAccount(context.WithoutCancel(ctx), account); err != nil {
-		e.logger.Error("persist account last error", "account_id", account.ID, "code", safeCode(err))
+func (e *Engine) releaseAccountLock(accountID string, lock *accountLock) {
+	e.locksMu.Lock()
+	lock.refs--
+	if lock.refs == 0 {
+		delete(e.locks, accountID)
+	}
+	e.locksMu.Unlock()
+}
+
+// persistLastError re-reads the live account inside a transaction so a stale
+// in-flight account snapshot can never re-enable a concurrently removed or
+// disabled account. The write is bounded even when the caller's context is
+// already cancelled during shutdown.
+func (e *Engine) persistLastError(ctx context.Context, accountID, code string) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lastErrorWriteTimeout)
+	defer cancel()
+
+	err := e.store.Transaction(writeCtx, func(tx core.Repository) error {
+		current, err := tx.GetAccount(writeCtx, accountID)
+		if err != nil {
+			return err
+		}
+		current.LastError = code
+		current.UpdatedAt = e.now().UTC()
+		return tx.SaveAccount(writeCtx, current)
+	})
+	if err != nil {
+		e.logger.Error("persist account last error", "account_id", accountID, "code", safeCode(err))
 	}
 }

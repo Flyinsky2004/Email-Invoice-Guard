@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	errProvider = errors.New("provider failure")
-	errStorage  = errors.New("storage failure")
+	errProvider        = errors.New("provider failure")
+	errStorage         = errors.New("storage failure")
+	errAccountDisabled = errors.New("account disabled")
 )
 
 func storageError() error { return fmt.Errorf("%w", errStorage) }

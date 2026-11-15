@@ -270,7 +270,7 @@ func TestParserFailureStillDelivers(t *testing.T) {
 	}
 	email, _ := store.emailByProviderID("m-1")
 	delivery, ok := store.deliveryForEmail(email.InternalEmailID)
-	if !ok || delivery.Payload.Kind != "ordinary" {
+	if !ok || delivery.Payload.Kind != deliveryKindEmail {
 		t.Fatalf("unexpected delivery %+v", delivery)
 	}
 	failures := store.failuresList()
@@ -279,6 +279,12 @@ func TestParserFailureStillDelivers(t *testing.T) {
 	}
 	if failures[0].EmailID != email.InternalEmailID {
 		t.Fatalf("failure email id = %q, want %q", failures[0].EmailID, email.InternalEmailID)
+	}
+	if failures[0].ProviderID != "" {
+		t.Fatalf("parse failure provider id = %q, want empty vendor id", failures[0].ProviderID)
+	}
+	if failures[0].ProviderID == email.ProviderMessageID {
+		t.Fatal("parse failure used the provider message id instead of a vendor id")
 	}
 	if strings.Contains(failures[0].Reason, "\n") || len([]rune(failures[0].Reason)) > 200 {
 		t.Fatalf("unbounded diagnostic: %q", failures[0].Reason)
@@ -309,7 +315,7 @@ func TestValidInvoiceEnhancedDelivery(t *testing.T) {
 	}
 	email, _ := store.emailByProviderID("m-1")
 	delivery, ok := store.deliveryForEmail(email.InternalEmailID)
-	if !ok || delivery.Payload.Kind != "enhanced" || delivery.Payload.InvoiceID == "" {
+	if !ok || delivery.Payload.Kind != deliveryKindInvoice || delivery.Payload.InvoiceID == "" {
 		t.Fatalf("unexpected delivery %+v", delivery)
 	}
 	if linker.calls != 1 {
@@ -353,11 +359,15 @@ func TestDuplicateInvoiceReferenceDeliversNewEmail(t *testing.T) {
 	second, _ := store.emailByProviderID("m-2")
 	firstDelivery, _ := store.deliveryForEmail(first.InternalEmailID)
 	secondDelivery, _ := store.deliveryForEmail(second.InternalEmailID)
-	if firstDelivery.Payload.Kind != "enhanced" {
+	if firstDelivery.Payload.Kind != deliveryKindInvoice {
 		t.Fatalf("first delivery = %q", firstDelivery.Payload.Kind)
 	}
-	if secondDelivery.Payload.Kind != "ordinary" || secondDelivery.Payload.InvoiceID != "" {
+	if secondDelivery.Payload.Kind != deliveryKindInvoice || secondDelivery.Payload.InvoiceID == "" {
 		t.Fatalf("duplicate reference delivery = %+v", secondDelivery.Payload)
+	}
+	if firstDelivery.Payload.InvoiceID != secondDelivery.Payload.InvoiceID {
+		t.Fatalf("duplicate reference points at a different invoice: %q vs %q",
+			firstDelivery.Payload.InvoiceID, secondDelivery.Payload.InvoiceID)
 	}
 }
 
@@ -392,7 +402,7 @@ func TestExistingPaidInvoicePreserved(t *testing.T) {
 	}
 	email, _ := store.emailByProviderID("m-1")
 	delivery, _ := store.deliveryForEmail(email.InternalEmailID)
-	if delivery.Payload.Kind != "ordinary" {
+	if delivery.Payload.Kind != deliveryKindInvoice {
 		t.Fatalf("delivery kind = %q", delivery.Payload.Kind)
 	}
 }
@@ -546,4 +556,155 @@ func TestSyncAccountNotFound(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not_found") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestParserReviewInvoiceForcedReviewRequired(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	source := singlePageSource(testEmail("m-1", testNow, "invoice", "body"))
+	parser := &fakeParser{fn: func(ctx context.Context, email core.NormalizedEmail) (*core.Invoice, error) {
+		return &core.Invoice{
+			ProviderID: "rfchost",
+			Number:     "INV-1",
+			DueDate:    "2026-11-20",
+			AmountDue:  core.Money{Minor: 684, Currency: "USD"},
+		}, core.ErrReviewRequired
+	}}
+	engine := newTestEngine(t, store, source, parser, nil)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	invoice, ok := store.invoiceByNumber("INV-1")
+	if !ok || invoice.Status != core.ReviewRequired {
+		t.Fatalf("invoice not forced to review: %+v", invoice)
+	}
+	if len(invoice.ReviewReasons) == 0 {
+		t.Fatal("review reasons missing")
+	}
+	email, _ := store.emailByProviderID("m-1")
+	delivery, _ := store.deliveryForEmail(email.InternalEmailID)
+	if delivery.Payload.Kind != deliveryKindInvoice {
+		t.Fatalf("delivery kind = %q", delivery.Payload.Kind)
+	}
+	failures := store.failuresList()
+	if len(failures) != 1 || failures[0].ProviderID != "rfchost" {
+		t.Fatalf("parse failure provider id = %+v", failures)
+	}
+}
+
+func TestInvoiceSourceEmailIDUsesCanonicalID(t *testing.T) {
+	store := newFakeStore()
+	store.canonicalizeEmailID = true
+	addAccount(store, "acc", true)
+	source := singlePageSource(testEmail("m-1", testNow, "invoice", "body"))
+	parser := &fakeParser{fn: func(ctx context.Context, email core.NormalizedEmail) (*core.Invoice, error) {
+		return &core.Invoice{
+			ProviderID: "rfchost",
+			Number:     "INV-1",
+			DueDate:    "2026-11-20",
+			AmountDue:  core.Money{Minor: 684, Currency: "USD"},
+		}, nil
+	}}
+	engine := newTestEngine(t, store, source, parser, nil)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	email, _ := store.emailByProviderID("m-1")
+	invoice, ok := store.invoiceByNumber("INV-1")
+	if !ok || invoice.SourceEmailID == "" {
+		t.Fatalf("invoice source email missing: %+v", invoice)
+	}
+	if invoice.SourceEmailID != email.InternalEmailID {
+		t.Fatalf("invoice source email = %q, want canonical %q", invoice.SourceEmailID, email.InternalEmailID)
+	}
+}
+
+func TestPersistLastErrorPreservesDisabledState(t *testing.T) {
+	store := newFakeStore()
+	account := addAccount(store, "acc", true)
+	account.Enabled = false
+	if err := store.SaveAccount(context.Background(), account); err != nil {
+		t.Fatal(err)
+	}
+	engine := newTestEngine(t, store, singlePageSource(), &fakeParser{}, nil)
+
+	engine.persistLastError(context.Background(), "acc", "provider_error")
+
+	updated, err := store.GetAccount(context.Background(), "acc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Enabled {
+		t.Fatal("stale account write re-enabled a disabled account")
+	}
+	if updated.LastError != "provider_error" {
+		t.Fatalf("last error = %q", updated.LastError)
+	}
+}
+
+func TestPageCommitRechecksEnabled(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	source := &fakeSource{typ: core.Microsoft, folders: []core.MailFolder{inboxFolder()}}
+	source.syncFn = func(ctx context.Context, account core.MailAccount, folder core.MailFolder, cursor core.SyncCursor) (core.SyncBatch, error) {
+		current, err := store.GetAccount(ctx, account.ID)
+		if err != nil {
+			return core.SyncBatch{}, err
+		}
+		current.Enabled = false
+		if err := store.SaveAccount(ctx, current); err != nil {
+			return core.SyncBatch{}, err
+		}
+		return core.SyncBatch{Emails: []core.NormalizedEmail{testEmail("m-1", testNow, "x", "y")}}, nil
+	}
+	engine := newTestEngine(t, store, source, &fakeParser{}, nil)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("disabled account produced error: %v", err)
+	}
+	if store.emailCount() != 0 || store.deliveryCount() != 0 {
+		t.Fatalf("page committed after disable: emails=%d deliveries=%d", store.emailCount(), store.deliveryCount())
+	}
+	updated, _ := store.GetAccount(context.Background(), "acc")
+	if updated.Enabled {
+		t.Fatal("account was re-enabled")
+	}
+}
+
+func TestLockWaitDeadline(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	source := &fakeSource{
+		typ:     core.Microsoft,
+		folders: []core.MailFolder{inboxFolder()},
+		syncFn: func(ctx context.Context, account core.MailAccount, folder core.MailFolder, cursor core.SyncCursor) (core.SyncBatch, error) {
+			started <- struct{}{}
+			<-release
+			return core.SyncBatch{}, nil
+		},
+	}
+	engine := newTestEngine(t, store, source, &fakeParser{}, nil)
+	engine.lockWait = 25 * time.Millisecond
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = engine.SyncAccount(context.Background(), "acc")
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first sync did not start")
+	}
+
+	err := engine.SyncAccount(context.Background(), "acc")
+	if err == nil || !strings.Contains(err.Error(), "context_deadline") {
+		t.Fatalf("lock wait was not bounded: %v", err)
+	}
+	close(release)
+	<-done
 }

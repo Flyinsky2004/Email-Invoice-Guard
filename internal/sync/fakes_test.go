@@ -86,9 +86,10 @@ func cursorKey(accountID, folderID string) string { return accountID + "\x00" + 
 
 type fakeStore struct {
 	core.Store
-	mu             sync.Mutex
-	st             *memState
-	failSaveCursor bool
+	mu                  sync.Mutex
+	st                  *memState
+	failSaveCursor      bool
+	canonicalizeEmailID bool
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{st: newMemState()} }
@@ -97,7 +98,7 @@ func (f *fakeStore) Transaction(ctx context.Context, fn func(core.Repository) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	next := f.st.clone()
-	tx := &txRepo{st: next, failSaveCursor: f.failSaveCursor}
+	tx := &txRepo{st: next, failSaveCursor: f.failSaveCursor, canonicalizeEmailID: f.canonicalizeEmailID}
 	if err := fn(tx); err != nil {
 		return err
 	}
@@ -188,8 +189,25 @@ func (f *fakeStore) GetSetting(ctx context.Context, key string) (string, error) 
 
 type txRepo struct {
 	core.Repository
-	st             *memState
-	failSaveCursor bool
+	st                  *memState
+	failSaveCursor      bool
+	canonicalizeEmailID bool
+}
+
+func (r *txRepo) GetAccount(ctx context.Context, id string) (core.MailAccount, error) {
+	account, ok := r.st.accounts[id]
+	if !ok {
+		return core.MailAccount{}, core.ErrNotFound
+	}
+	return account, nil
+}
+
+func (r *txRepo) SaveAccount(ctx context.Context, account core.MailAccount) error {
+	if account.ID == "" {
+		return core.ErrInvalid
+	}
+	r.st.accounts[account.ID] = account
+	return nil
 }
 
 func (r *txRepo) SaveEmail(ctx context.Context, email core.NormalizedEmail) (core.NormalizedEmail, bool, error) {
@@ -210,6 +228,9 @@ func (r *txRepo) SaveEmail(ctx context.Context, email core.NormalizedEmail) (cor
 	}
 	if existing, ok := r.st.emails[email.InternalEmailID]; ok {
 		return existing, false, nil
+	}
+	if r.canonicalizeEmailID {
+		email.InternalEmailID = core.NewID()
 	}
 	r.st.emails[email.InternalEmailID] = email
 	if email.ProviderMessageID != "" {

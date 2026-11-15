@@ -13,6 +13,11 @@ import (
 	"email-invoice-guard/internal/mailproc"
 )
 
+const (
+	deliveryKindEmail   = "email"
+	deliveryKindInvoice = "invoice"
+)
+
 type preparedEmail struct {
 	email      core.NormalizedEmail
 	invoice    *core.Invoice
@@ -60,8 +65,15 @@ func (e *Engine) processPage(ctx context.Context, account core.MailAccount, fold
 			}
 			if invoice != nil {
 				invoice.AccountID = account.ID
-				invoice.SourceEmailID = email.InternalEmailID
-				if invoice.Status == "" {
+				if parseErr != nil {
+					// A parser that returns an invoice together with an error
+					// has not sufficiently validated it: never default to
+					// PENDING_CONFIRMATION.
+					invoice.Status = core.ReviewRequired
+					if len(invoice.ReviewReasons) == 0 {
+						invoice.ReviewReasons = []string{sanitizeReason(parseErr)}
+					}
+				} else if invoice.Status == "" {
 					invoice.Status = core.PendingConfirmation
 				}
 				if invoice.CreatedAt.IsZero() {
@@ -87,6 +99,19 @@ func (e *Engine) processPage(ctx context.Context, account core.MailAccount, fold
 	}
 
 	return e.store.Transaction(ctx, func(tx core.Repository) error {
+		// Re-check the live account before committing the page: a concurrent
+		// removal/disable must not be overwritten by a stale in-flight sync.
+		current, err := tx.GetAccount(ctx, account.ID)
+		if err != nil {
+			if errors.Is(err, core.ErrNotFound) {
+				return errAccountDisabled
+			}
+			return storageError()
+		}
+		if !current.Enabled {
+			return errAccountDisabled
+		}
+
 		for _, item := range prepared {
 			saved, created, err := tx.SaveEmail(ctx, item.email)
 			if err != nil {
@@ -98,25 +123,35 @@ func (e *Engine) processPage(ctx context.Context, account core.MailAccount, fold
 				continue
 			}
 			if item.parseErr != nil {
-				if err := tx.RecordParseFailure(ctx, saved.InternalEmailID, saved.ProviderMessageID, sanitizeReason(item.parseErr)); err != nil {
+				providerID := ""
+				if item.invoice != nil {
+					providerID = item.invoice.ProviderID
+				}
+				if providerID == "" {
+					providerID = item.email.Classification.ProviderID
+				}
+				if err := tx.RecordParseFailure(ctx, saved.InternalEmailID, providerID, sanitizeReason(item.parseErr)); err != nil {
 					return storageError()
 				}
 			}
 
-			kind := "ordinary"
+			kind := deliveryKindEmail
 			invoiceID := ""
 			if item.invoice != nil {
-				invoice, invoiceCreated, err := tx.SaveInvoice(ctx, *item.invoice)
+				invoice := *item.invoice
+				// The canonical email ID is only known after SaveEmail.
+				invoice.SourceEmailID = saved.InternalEmailID
+				savedInvoice, invoiceCreated, err := tx.SaveInvoice(ctx, invoice)
 				if err != nil {
 					return storageError()
 				}
-				if invoiceCreated {
-					kind = "enhanced"
-					invoiceID = invoice.ID
-					if e.linker != nil {
-						if err := e.linker.Reconcile(ctx, tx, invoice); err != nil {
-							return storageError()
-						}
+				// An existing invoice still gets an invoice notification for
+				// the new mail, but its business/payment state is untouched.
+				kind = deliveryKindInvoice
+				invoiceID = savedInvoice.ID
+				if invoiceCreated && e.linker != nil {
+					if err := e.linker.Reconcile(ctx, tx, savedInvoice); err != nil {
+						return storageError()
 					}
 				}
 			}
