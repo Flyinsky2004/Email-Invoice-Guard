@@ -102,5 +102,18 @@
     "agent_stopped": true,
     "worktree_removed": true,
     "branch_removed": true
+  },
+  {
+    "task": "T09",
+    "branch": "task/T09-manual-reminder-contract",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t09",
+    "terminal": "t101",
+    "name": "eig-t09",
+    "launched_at": "2026-11-15T15:13:17+00:00",
+    "spec": "docs/tasks/T09.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   }
 ]
