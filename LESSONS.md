@@ -213,3 +213,9 @@
 - 修复 commit：待集成报告提交；Codex 保留双方教训解决冲突、实际完成 rebase 后才重新派工。
 - Done right: 使用 check=True 或 && 连接有前置依赖的操作，并检查 rebase 状态再发送通知。
 - Seen 1× (2026-11-15).
+
+**面向用户的配置命令必须提供发现步骤（列出可用 ID），否则参数不可操作。**
+- T07 最终可操作性补齐：/settings folder 需要 folderID，但 /accounts 与 /settings 都不展示 folderID，用户无法启用自定义文件夹；主线验收指出。
+- 修复 commit：本次 T07 可操作性提交（SHA 见 result.txt）。
+- Done right: /settings folder <accountID> 校验 owner 后列出 name/id/enabled；无目录提示先 /sync；help 与 settings 同步显示用法；mock 测试覆盖列表、空目录、异 owner。
+- Seen 1× (2026-11-15).

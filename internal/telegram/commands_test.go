@@ -12,7 +12,7 @@ import (
 func TestHelpCommand(t *testing.T) {
 	env := newTestEnv(t)
 	text := sentText(env.runMessage("/help"))
-	for _, want := range []string{"/add", "/accounts", "/remove", "/sync", "/latest", "/search", "/invoices", "/pending", "/paid", "/overdue", "/assets", "/providers", "/status", "/settings"} {
+	for _, want := range []string{"/add", "/accounts", "/remove", "/sync", "/latest", "/search", "/invoices", "/pending", "/paid", "/overdue", "/assets", "/providers", "/status", "/settings", "/settings folder &lt;accountID&gt;", "on|off"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("help missing %q", want)
 		}
@@ -356,6 +356,55 @@ func TestSettingsFolderValidation(t *testing.T) {
 	}
 	if saved != nil {
 		t.Fatal("invalid folder settings were persisted")
+	}
+}
+
+func TestSettingsFolderList(t *testing.T) {
+	env := newTestEnv(t)
+	account := core.MailAccount{ID: testID(2), Address: "owner@example.com", OwnerUserID: 7}
+	env.store.getAccount = func(context.Context, string) (core.MailAccount, error) { return account, nil }
+	env.store.listFolders = func(context.Context, string) ([]core.MailFolder, error) {
+		return []core.MailFolder{
+			{ID: "INBOX", AccountID: account.ID, Name: "Inbox", Role: "inbox", Enabled: true},
+			{ID: "Archive", AccountID: account.ID, Name: "Archive", Enabled: false},
+		}, nil
+	}
+	env.store.saveFolder = func(context.Context, core.MailFolder) error {
+		t.Fatal("listing folders must not save")
+		return nil
+	}
+
+	text := sentText(env.runMessage("/settings folder " + account.ID))
+	for _, want := range []string{"Inbox", "id=INBOX", "enabled", "Archive", "id=Archive", "disabled"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("folder list missing %q: %q", want, text)
+		}
+	}
+}
+
+func TestSettingsFolderListEmptyTellsUserToSync(t *testing.T) {
+	env := newTestEnv(t)
+	account := core.MailAccount{ID: testID(2), Address: "owner@example.com", OwnerUserID: 7}
+	env.store.getAccount = func(context.Context, string) (core.MailAccount, error) { return account, nil }
+	env.store.listFolders = func(context.Context, string) ([]core.MailFolder, error) { return nil, nil }
+
+	text := sentText(env.runMessage("/settings folder " + account.ID))
+	if !strings.Contains(text, "Run /sync first") {
+		t.Fatalf("empty folder list does not point at /sync: %q", text)
+	}
+}
+
+func TestSettingsFolderListRejectsForeignAccount(t *testing.T) {
+	env := newTestEnv(t)
+	account := core.MailAccount{ID: testID(2), Address: "other@example.com", OwnerUserID: 99}
+	env.store.getAccount = func(context.Context, string) (core.MailAccount, error) { return account, nil }
+	env.store.listFolders = func(context.Context, string) ([]core.MailFolder, error) {
+		t.Fatal("foreign account folders were listed")
+		return nil, nil
+	}
+	text := sentText(env.runMessage("/settings folder " + account.ID))
+	if !strings.Contains(text, "not found") {
+		t.Fatalf("unexpected reply: %q", text)
 	}
 }
 
