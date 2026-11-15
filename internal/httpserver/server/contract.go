@@ -1,5 +1,3 @@
-//go:build stageb
-
 package server
 
 import (
@@ -11,9 +9,8 @@ import (
 	"email-invoice-guard/internal/providers/qq"
 )
 
-// New is the frozen cross-module constructor. It is compiled only once the
-// provider, OAuth and QQ onboarding packages have been merged (Stage B), which
-// is why it carries the "stageb" build tag during Stage A.
+// New is the frozen cross-module constructor. It mounts the OAuth callback and
+// QQ onboarding handlers when their sources are configured.
 func New(cfg core.Config, store core.Store, ms *microsoft.Source, onboarding *qq.Onboarding) *http.Server {
 	mounts := Mounts{}
 	if ms != nil {

@@ -1,5 +1,3 @@
-//go:build stageb
-
 package app
 
 import (
@@ -27,8 +25,7 @@ import (
 )
 
 // Run composes the runtime and blocks until ctx is cancelled or a service
-// fails. It is compiled in Stage B, once every module constructor from
-// docs/contracts.md exists.
+// fails. It wires every constructor from docs/contracts.md.
 //
 // Ordering guarantees:
 //   - storage is opened first and closed last, after every goroutine exits;

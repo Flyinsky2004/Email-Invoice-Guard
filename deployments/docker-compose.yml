@@ -37,7 +37,8 @@ services:
     stop_grace_period: 30s
 
   caddy:
-    image: caddy:2.9-alpine
+    # Pinned to the current supported release (v2.11.9, 2026-11-05).
+    image: caddy:2.11.9-alpine
     restart: unless-stopped
     depends_on:
       app:

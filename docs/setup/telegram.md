@@ -63,9 +63,28 @@
 - `/settings timezone <IANA 时区>`，例如 `Asia/Shanghai`
 - `/settings reminder <HH:MM>`，例如 `09:30`
 - `/settings sync <秒>`，例如 `120`
-- `/settings folder <accountID> <folderID> on|off`
+- `/settings folder <accountID>`：列出该账号的文件夹名称、文件夹 ID 与启用状态
+- `/settings folder <accountID> <folderID> on|off`：开启或关闭指定文件夹的同步
 
-设置写入数据库后生效：提醒调度在每次 Tick 读取时区与提醒时间，同步循环在每轮之间读取间隔。
+文件夹管理完整流程：
+
+1. 先用 `/accounts` 找到账号 ID。
+2. 发送 `/settings folder <accountID>`，机器人返回文件夹列表，例如：
+
+   ```text
+   INBOX            inbox-folder-id      on
+   收件箱副本        custom-folder-id     off
+   ```
+
+3. 复制目标文件夹 ID，发送 `/settings folder <accountID> <folderID> on` 开启，
+   或 `... off` 关闭。
+4. 默认只启用 Inbox；其他文件夹需要显式开启后才会同步。
+
+账号接入后新建的文件夹会在下一次目录刷新时被发现，机器人会保留你已有的
+开启/关闭选择；已启用的文件夹继续同步，未启用的保持关闭。
+
+设置写入数据库后立即生效：提醒调度在每次 Tick 读取时区与提醒时间，同步循环在
+每轮之间读取同步间隔，文件夹开关在下一轮目录刷新后生效。
 
 ## 5. 账单交互
 

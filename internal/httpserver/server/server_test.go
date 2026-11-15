@@ -182,6 +182,20 @@ func TestPostBodyIsBounded(t *testing.T) {
 	}
 }
 
+func TestContractNewMountsHealthWithoutSources(t *testing.T) {
+	srv := New(testConfig(), nil, nil, nil)
+	if rec := serve(t, srv.Handler, http.MethodGet, "/healthz", nil); rec.Code != http.StatusOK {
+		t.Fatalf("health status: %d", rec.Code)
+	}
+	// With no Microsoft source and no QQ onboarding, the onboarding routes are
+	// not mounted rather than serving a placeholder.
+	for _, path := range []string{"/oauth/microsoft/callback", "/setup/qq"} {
+		if rec := serve(t, srv.Handler, http.MethodGet, path, nil); rec.Code != http.StatusNotFound {
+			t.Fatalf("%s should be unmounted, got %d", path, rec.Code)
+		}
+	}
+}
+
 func TestHealthPathCollisionFallsBack(t *testing.T) {
 	cfg := testConfig()
 	cfg.HealthPath = qqSetupPath

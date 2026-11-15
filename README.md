@@ -142,6 +142,11 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 | `/status` | 系统状态 |
 | `/settings` | 时区、提醒时间、同步间隔、文件夹开关 |
 
+文件夹管理：`/settings folder <accountID>` 列出文件夹名称/ID/启用状态，
+再用 `/settings folder <accountID> <folderID> on|off` 切换。接入后新建的文件夹
+会在目录刷新时被发现，已有的开关选择会保留。详见
+[docs/setup/telegram.md](docs/setup/telegram.md)。
+
 权限：每条命令与按钮回调都同时校验**用户 ID 白名单**与**配置的 Chat ID**，其他会话一律拒绝。
 
 ## 状态与人工操作

@@ -231,3 +231,9 @@
 - 修复 commit：本次 T08 阶段A 提交（`feat(app-deployment): implement T08 module and tests`）。
 - Done right: app 与 caddy 都声明 `env_file: ../.env`，Caddy 在容器内读取 `{$DOMAIN}`；`docker compose -f deployments/docker-compose.yml config` 无需 `--env-file` 即通过，且 `TRUSTED_PROXY_CIDRS` 与 `backend` 网段一致。
 - Seen 1× (2026-11-15).
+
+**reminder.Tick 用传入的 now 作为 outbox available_at；模拟“次日”的测试必须先让投递到期。**
+- T08 阶段B E2E：用 nextDay 调用 Tick 后立刻 DeliverOnce，ClaimDelivery 按真实 now 判定未到期，返回 handled=false，误判为提醒未创建。
+- 修复 commit：本次 T08 阶段B 提交。
+- Done right: 测试在 Tick 后把 PENDING/FAILED/UNKNOWN 的 available_at 改为 now-1s（固定宽度 UTC 布局 `2006-01-02T15:04:05.000000000Z`）再 DeliverOnce，真实 claim/deliver/fail/retry 路径不变。
+- Seen 1× (2026-11-15).

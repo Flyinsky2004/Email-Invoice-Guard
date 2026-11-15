@@ -1,5 +1,3 @@
-//go:build stageb
-
 package main
 
 import (
