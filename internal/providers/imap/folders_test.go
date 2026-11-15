@@ -94,6 +94,48 @@ func TestListFoldersIDsAreStableAcrossCalls(t *testing.T) {
 	}
 }
 
+func TestFolderIDNormalizesOnlyInbox(t *testing.T) {
+	if folderID("acct-1", "INBOX") != folderID("acct-1", "inbox") {
+		t.Fatal("INBOX must be case-insensitive")
+	}
+	if folderID("acct-1", "Foo") == folderID("acct-1", "foo") {
+		t.Fatal("Foo and foo are distinct mailboxes and must not share an ID")
+	}
+	if folderID("acct-1", "Foo") != folderID("acct-1", "Foo") {
+		t.Fatal("folder IDs must be stable for the same name")
+	}
+}
+
+func TestListFoldersDistinguishesCaseSensitiveMailboxNames(t *testing.T) {
+	srv := startServer(t, imaptest.Options{
+		Mailboxes: []imaptest.Mailbox{
+			inboxMailbox(1, 1),
+			{Name: "Foo"},
+			{Name: "foo"},
+		},
+	})
+	repo := &fakeRepo{credential: core.Credential{AccountID: "acct-1", AuthorizationCode: "code"}}
+	src := newTestSource(t, srv, repo)
+
+	folders, err := src.ListFolders(context.Background(), testAccount())
+	if err != nil {
+		t.Fatalf("ListFolders() error = %v", err)
+	}
+	ids := map[string]string{}
+	for _, folder := range folders {
+		ids[folder.Name] = folder.ID
+	}
+	if ids["Foo"] == "" || ids["foo"] == "" {
+		t.Fatalf("LIST did not return both Foo and foo: %+v", folders)
+	}
+	if ids["Foo"] == ids["foo"] {
+		t.Fatalf("Foo and foo share folder ID %q; they have distinct UID state", ids["Foo"])
+	}
+	if ids["INBOX"] != folderID("acct-1", "INBOX") {
+		t.Fatalf("INBOX ID = %q, want stable normalized ID", ids["INBOX"])
+	}
+}
+
 func TestListFoldersAuthFailure(t *testing.T) {
 	srv := startServer(t, imaptest.Options{RejectLogin: true})
 	repo := &fakeRepo{credential: core.Credential{AccountID: "acct-1", AuthorizationCode: "bad"}}
