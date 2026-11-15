@@ -132,6 +132,9 @@ func (r *repo) ClaimDelivery(ctx context.Context, now time.Time, lease time.Dura
 			if _, err := t.q.ExecContext(ctx, `UPDATE invoice_reminders SET status = 'SENDING' WHERE outbox_id = ?`, d.ID); err != nil {
 				return mapErr(err)
 			}
+			if _, err := t.q.ExecContext(ctx, `UPDATE manual_reminder_dispatches SET status = 'SENDING' WHERE outbox_id = ?`, d.ID); err != nil {
+				return mapErr(err)
+			}
 			out = &d
 			return nil
 		}
@@ -169,6 +172,9 @@ func (r *repo) expireLeases(ctx context.Context, now time.Time) error {
 		if _, err := r.q.ExecContext(ctx, `UPDATE invoice_reminders SET status = 'UNKNOWN' WHERE outbox_id = ?`, id); err != nil {
 			return mapErr(err)
 		}
+		if _, err := r.q.ExecContext(ctx, `UPDATE manual_reminder_dispatches SET status = 'UNKNOWN' WHERE outbox_id = ?`, id); err != nil {
+			return mapErr(err)
+		}
 	}
 	return nil
 }
@@ -201,6 +207,15 @@ func (r *repo) CompleteDelivery(ctx context.Context, outboxID string, messages [
 				return mapErr(err)
 			}
 		}
+		// Capture the manual dispatch (if any) before mirroring SENT so a
+		// replayed completion does not duplicate the REMINDER_SENT event.
+		var manualPlanID, manualDispatchID, manualStatus string
+		manualErr := t.q.QueryRowContext(ctx, `SELECT plan_id, id, status
+			FROM manual_reminder_dispatches WHERE outbox_id = ?`, outboxID).
+			Scan(&manualPlanID, &manualDispatchID, &manualStatus)
+		if manualErr != nil && !errors.Is(manualErr, sql.ErrNoRows) {
+			return manualErr
+		}
 		res, err := t.q.ExecContext(ctx, `UPDATE delivery_outbox
 			SET status = 'SENT', lease_until = NULL, last_error = ''
 			WHERE id = ?`, outboxID)
@@ -217,6 +232,32 @@ func (r *repo) CompleteDelivery(ctx context.Context, outboxID string, messages [
 		if _, err := t.q.ExecContext(ctx, `UPDATE invoice_reminders SET status = 'SENT', sent_at = ? WHERE outbox_id = ?`,
 			fmtTime(at), outboxID); err != nil {
 			return mapErr(err)
+		}
+		if _, err := t.q.ExecContext(ctx, `UPDATE manual_reminder_dispatches SET status = 'SENT', sent_at = ? WHERE outbox_id = ?`,
+			fmtTime(at), outboxID); err != nil {
+			return mapErr(err)
+		}
+		if manualErr == nil {
+			// Only a still-pending occurrence counts as notified; a paid or
+			// cancelled occurrence keeps its existing state.
+			if _, err := t.q.ExecContext(ctx, `UPDATE manual_reminder_occurrences
+				SET notified_at = ?, updated_at = ?
+				WHERE payment_status = 'PENDING_CONFIRMATION'
+				  AND id IN (SELECT occurrence_id FROM manual_reminder_dispatch_occurrences WHERE dispatch_id = ?)`,
+				fmtTime(at), fmtTime(at), manualDispatchID); err != nil {
+				return mapErr(err)
+			}
+			if manualStatus != string(core.DeliverySent) {
+				metadata, err := marshalJSON(map[string]string{"dispatch_id": manualDispatchID})
+				if err != nil {
+					return err
+				}
+				if err := t.insertManualEvent(ctx, core.ManualReminderEvent{
+					PlanID: manualPlanID, EventType: core.ManualEventReminderSent, Metadata: metadata,
+				}, at); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})
@@ -260,6 +301,9 @@ func (r *repo) FailDelivery(ctx context.Context, outboxID string, at time.Time, 
 		if _, err := t.q.ExecContext(ctx, `UPDATE invoice_reminders SET status = ? WHERE outbox_id = ?`, string(status), outboxID); err != nil {
 			return mapErr(err)
 		}
+		if _, err := t.q.ExecContext(ctx, `UPDATE manual_reminder_dispatches SET status = ? WHERE outbox_id = ?`, string(status), outboxID); err != nil {
+			return mapErr(err)
+		}
 		return nil
 	})
 }
@@ -289,6 +333,9 @@ func (r *repo) SkipDelivery(ctx context.Context, outboxID string, at time.Time) 
 			return nil
 		}
 		if _, err := t.q.ExecContext(ctx, `UPDATE invoice_reminders SET status = 'SKIPPED' WHERE outbox_id = ?`, outboxID); err != nil {
+			return mapErr(err)
+		}
+		if _, err := t.q.ExecContext(ctx, `UPDATE manual_reminder_dispatches SET status = 'SKIPPED' WHERE outbox_id = ?`, outboxID); err != nil {
 			return mapErr(err)
 		}
 		return nil

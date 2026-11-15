@@ -27,8 +27,8 @@ func TestOpenCreatesSchemaAndSeedsProvider(t *testing.T) {
 	if err := s.DB().QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 1 {
-		t.Fatalf("schema version = %d, want 1", version)
+	if version != 2 {
+		t.Fatalf("schema version = %d, want 2", version)
 	}
 	var name string
 	if err := s.DB().QueryRowContext(ctx, `SELECT name FROM providers WHERE id = 'rfchost'`).Scan(&name); err != nil {
@@ -69,8 +69,8 @@ func TestMigrationIdempotentReopen(t *testing.T) {
 	if err := second.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("schema_migrations rows = %d, want 1", count)
+	if count != 2 {
+		t.Fatalf("schema_migrations rows = %d, want 2", count)
 	}
 }
 

@@ -438,3 +438,155 @@ func TestConcurrentReminderCreatesOne(t *testing.T) {
 		t.Fatalf("reminders=%d outbox=%d, want 1/1", reminders, outbox)
 	}
 }
+
+func TestManualDispatchMirrorClaimExpireComplete(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	plan := mustManualPlan(t, s, "plan-mirror")
+	occ := mustManualOccurrence(t, s, plan.ID, "2026-12-15", "2027-01-15")
+	dispatch := mustManualDispatch(t, s, plan.ID, []string{occ.ID}, "2026-12-15")
+	now := time.Now()
+
+	claimed, err := s.ClaimDelivery(ctx, now, time.Minute)
+	if err != nil || claimed == nil {
+		t.Fatalf("claim: %v %v", claimed, err)
+	}
+	if claimed.ID != dispatch.OutboxID {
+		t.Fatalf("claimed %s, want %s", claimed.ID, dispatch.OutboxID)
+	}
+	got, err := s.GetDispatch(ctx, dispatch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != core.DeliverySending {
+		t.Fatalf("dispatch after claim = %s", got.Status)
+	}
+
+	if err := s.expireLeases(ctx, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetDispatch(ctx, dispatch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != core.DeliveryUnknown {
+		t.Fatalf("dispatch after lease expiry = %s", got.Status)
+	}
+
+	reclaimed, err := s.ClaimDelivery(ctx, now.Add(2*time.Minute), time.Minute)
+	if err != nil || reclaimed == nil {
+		t.Fatalf("reclaim: %v %v", reclaimed, err)
+	}
+	at := time.Date(2026, 12, 15, 1, 2, 3, 0, time.UTC)
+	if err := s.CompleteDelivery(ctx, dispatch.OutboxID, nil, at); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetDispatch(ctx, dispatch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != core.DeliverySent || got.SentAt == nil || !got.SentAt.Equal(at) {
+		t.Fatalf("dispatch after complete = %+v", got)
+	}
+}
+
+func TestManualDispatchMirrorFail(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	plan := mustManualPlan(t, s, "plan-mirror-fail")
+	occ := mustManualOccurrence(t, s, plan.ID, "2026-12-15", "2027-01-15")
+	dispatch := mustManualDispatch(t, s, plan.ID, []string{occ.ID}, "2026-12-15")
+	now := time.Now()
+
+	if _, err := s.ClaimDelivery(ctx, now, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailDelivery(ctx, dispatch.OutboxID, now, true, "ambiguous"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetDispatch(ctx, dispatch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != core.DeliveryUnknown {
+		t.Fatalf("dispatch after unknown fail = %s", got.Status)
+	}
+
+	if _, err := s.ClaimDelivery(ctx, now.Add(time.Second), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailDelivery(ctx, dispatch.OutboxID, now.Add(time.Second), false, "bad request"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetDispatch(ctx, dispatch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != core.DeliveryFailed {
+		t.Fatalf("dispatch after known fail = %s", got.Status)
+	}
+	if n := countManualEvents(t, s, plan.ID, core.ManualEventReminderSent); n != 0 {
+		t.Fatalf("fail wrote REMINDER_SENT: %d", n)
+	}
+}
+
+func TestManualDispatchMirrorSkip(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	plan := mustManualPlan(t, s, "plan-mirror-skip")
+	occ := mustManualOccurrence(t, s, plan.ID, "2026-12-15", "2027-01-15")
+	dispatch := mustManualDispatch(t, s, plan.ID, []string{occ.ID}, "2026-12-15")
+
+	if err := s.SkipDelivery(ctx, dispatch.OutboxID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetDispatch(ctx, dispatch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != core.DeliverySkipped {
+		t.Fatalf("dispatch after skip = %s", got.Status)
+	}
+	if n := countManualEvents(t, s, plan.ID, core.ManualEventReminderSent); n != 0 {
+		t.Fatalf("skip wrote REMINDER_SENT: %d", n)
+	}
+}
+
+func TestInvoiceReminderRegressionUnaffectedByManualMirror(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustAccount(t, s, "acc-reg", core.Microsoft, "reg@example.com")
+	invoice := mustInvoice(t, s, sampleInvoice("acc-reg", "INV-REG"))
+	created, err := s.CreateReminder(ctx, core.InvoiceReminder{InvoiceID: invoice.ID, ReminderDate: "2026-10-20"},
+		core.Delivery{DedupKey: "reminder:reg", Payload: core.DeliveryPayload{Kind: "reminder", InvoiceID: invoice.ID}})
+	if err != nil || !created {
+		t.Fatalf("reminder: %v %v", created, err)
+	}
+	reminders, err := s.ListReminders(ctx, invoice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outboxID := reminders[0].OutboxID
+	claimed, err := s.ClaimDelivery(ctx, time.Now(), time.Minute)
+	if err != nil || claimed == nil || claimed.ID != outboxID {
+		t.Fatalf("claim: %+v %v", claimed, err)
+	}
+	at := time.Date(2026, 11, 6, 1, 2, 3, 0, time.UTC)
+	if err := s.CompleteDelivery(ctx, outboxID, nil, at); err != nil {
+		t.Fatal(err)
+	}
+	reminders, err = s.ListReminders(ctx, invoice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reminders[0].Status != core.DeliverySent || reminders[0].SentAt == nil || !reminders[0].SentAt.Equal(at) {
+		t.Fatalf("invoice reminder regressed: %+v", reminders[0])
+	}
+	var manualCount int
+	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM manual_reminder_dispatches`).Scan(&manualCount); err != nil {
+		t.Fatal(err)
+	}
+	if manualCount != 0 {
+		t.Fatalf("invoice flow touched manual dispatches: %d", manualCount)
+	}
+}
