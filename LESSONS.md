@@ -81,3 +81,21 @@
 - 修复 commit：dcf6c3c。
 - Done right: CheckRedirect 比较 via[0] 与目标 origin，跨 origin 直接拒绝；回归测试覆盖 token→Graph 与 Graph→authority 均 0 命中。
 - Seen 1× (2026-11-15).
+
+**Graph v1.0 属性名必须以官方资源文档为准，禁止凭猜测 select 不存在的字段。**
+- T01 首版 ListFolders 使用 $select=id,displayName,wellKnownName；Graph v1.0 mailFolder 无 wellKnownName 属性，真实请求会被拒绝且角色映射失效。
+- 修复 commit：f962f0b。
+- Done right: 通过 /me/mailFolders/{well-known}?$select=id 解析角色 ID，再列真实字段并递归 childFolders；测试断言请求不含 wellKnownName，覆盖中文收件箱与嵌套自定义文件夹。
+- Seen 1× (2026-11-15).
+
+**成功响应不得设置固定字节上限；只有错误小响应可以限流。**
+- T01 首版对 Graph 成功响应使用 8MiB LimitReader，合法大正文会被截断并导致 JSON 解码失败、同步永久卡住。
+- 修复 commit：f962f0b。
+- Done right: 成功响应流式解码不设上限，token/错误响应保留 1MiB 限制；>8MiB 正文回归测试断言首尾完整。
+- Seen 1× (2026-11-15).
+
+**HTML 转文本应使用 HTML 解析器而非正则剥离标签。**
+- T01 首版正则剥离标签会丢失未知或畸形标签内的有效文本。
+- 修复 commit：f962f0b。
+- Done right: 使用 x/net/html 遍历 DOM，跳过 script/style/head，块级元素换行并归一空白；测试覆盖未知标签、中文与实体。
+- Seen 1× (2026-11-15).
