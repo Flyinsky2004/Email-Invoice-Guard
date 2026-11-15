@@ -17,3 +17,32 @@ All eight worktrees passed actual `go build ./...` and `go test ./...` before la
 5. Run format check, vet, all tests/race, Linux CGO-free build, Docker build+runtime health, SQLite migration/reopen/backup, mock full delivery/payment/reminder/restart suite and dependency vulnerability scan. Record exact actual outputs and limitations, never infer completion from worker status.
 
 External credentials not present and not required for automated suites; Microsoft/QQ/Telegram live validation pending user-provided configuration. Initial Docker daemon not running, CLI present; local runtime startup/build will be attempted during acceptance.
+
+## Manual recurring reminders and bilingual Telegram (2026-11-15)
+
+Incremental delivery on top of T01–T08. Contract freeze T09, then parallel T10 storage /
+T11 domain / T12 Telegram, then serial T13 application integration, then T14 bilingual
+Telegram text. Every merge ran `go build ./...`, `go vet ./...` and the full test suite on
+`main`; the final `./scripts/verify.sh` (gofmt, vet, test, `-race`, CGO-free Linux build)
+exited 0.
+
+- T09: additive `internal/core` contract (manual plan/occurrence/dispatch/event types,
+  standalone `ManualReminderRepository` and `ManualReminderService`, `ManualReminderConfig`,
+  two appended `DeliveryPayload` fields), CR004 docs, schema contract, DAG, T10–T13 specs.
+- T10: migration 0002, `core.ManualReminderRepository` on `*repo`, append-only outbox mirror.
+  Orchestrator review required moving `notified_at`/`REMINDER_SENT` to delivery completion.
+- T11: `internal/reminder/manual` recurrence, lifecycle, scheduler and service with a fixed
+  clock. Orchestrator fixed two post-merge defects: reminder-time-aware first due date and
+  skipping dates that already hold an occurrence on edit/resume.
+- T12: wizard, commands, callbacks, manual rendering and additive `NewWithManual`. Review
+  required a two-stage payment confirmation, removal of non-frozen type assertions, and the
+  missing period/asset wizard steps. Orchestrator added the pre-send plan/occurrence recheck.
+- T13: `MANUAL_*` config, manual scheduler goroutine, `NewWithManual` wiring, docs and an
+  end-to-end create → tick → deliver → confirm → next month → restart test.
+- T14: bilingual English/Simplified Chinese Telegram text, `/settings language en|zh-CN`,
+  default `zh-CN`, 282 identical catalog keys per language, unchanged command names,
+  callback data and exported formatter signatures.
+
+Worker mapping: `docs/reports/worker-map.json` (T09–T14). All task worktrees and branches
+were removed after merge. Live Telegram/Microsoft/QQ validation still requires user
+credentials and is not claimed as tested.
