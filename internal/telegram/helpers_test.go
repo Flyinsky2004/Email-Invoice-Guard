@@ -462,6 +462,9 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	tg := newMockTelegram(t)
 	store := newFakeStore()
+	// Existing tests assert the English catalog; new language tests clear this
+	// setting to exercise the zh-CN default.
+	store.settings[settingLanguage] = string(langEN)
 	logs := &syncBuffer{}
 	env := &testEnv{
 		store:      store,

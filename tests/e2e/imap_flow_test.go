@@ -16,6 +16,11 @@ import (
 // a fake TLS IMAP server and a mock Telegram API.
 func TestTLSIMAPInvoiceLifecycle(t *testing.T) {
 	store, path, key := openStore(t)
+	// This test asserts English display text; pin the language explicitly since
+	// the bot defaults to Simplified Chinese.
+	if err := store.SetSetting(t.Context(), "language", "en"); err != nil {
+		t.Fatalf("set language: %v", err)
+	}
 	tg := newMockTelegram(t)
 	cfg := baseConfig(tg)
 	logger := discardLogger()

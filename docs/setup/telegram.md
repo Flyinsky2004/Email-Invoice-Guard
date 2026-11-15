@@ -75,6 +75,15 @@
 - `/settings sync <秒>`，例如 `120`
 - `/settings folder <accountID>`：列出该账号的文件夹名称、文件夹 ID 与启用状态
 - `/settings folder <accountID> <folderID> on|off`：开启或关闭指定文件夹的同步
+- `/settings language`：查看当前界面语言
+- `/settings language en|zh-CN`：切换机器人界面语言，立即生效
+
+### 界面语言
+
+- 支持 English（`en`）与简体中文（`zh-CN`）两种界面语言；未设置时默认简体中文。
+- 设置值保存在数据库 `settings` 表的 `language` 键中，每条消息、每次按钮回调和每次投递都会重新读取，修改后无需重启。
+- 也可使用别名 `zh`、`zh-cn`、`cn` 表示简体中文；其他值会被拒绝且不修改已保存的设置。
+- 命令名、按钮回调数据、日志与已存储的业务数据不随语言变化。
 
 文件夹管理完整流程：
 

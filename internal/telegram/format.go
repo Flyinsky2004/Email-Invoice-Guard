@@ -157,35 +157,41 @@ func splitUnits(s string, budget int) []string {
 	return out
 }
 
-// FormatEmail renders a complete email notification. All body text, links and
-// attachment names are included; HTML-only bodies are converted to text
-// locally. Every returned part is valid escaped HTML within the size limit.
-// Times use the default display zone (Asia/Taipei); the Bot uses its dynamic
-// configured zone through formatEmailAt.
+// FormatEmail renders a complete email notification in English. It keeps the
+// original signature for external acceptance; the Bot uses formatEmailAtLang.
+// All body text, links and attachment names are included; HTML-only bodies are
+// converted to text locally. Every returned part is valid escaped HTML within
+// the size limit. Times use the default display zone (Asia/Taipei); the Bot uses
+// its dynamic configured zone through formatEmailAtLang.
 func FormatEmail(email core.NormalizedEmail, account core.MailAccount) []string {
 	return formatEmailAt(email, account, defaultDisplayLocation())
 }
 
+// formatEmailAt renders an English email notification with the supplied zone.
 func formatEmailAt(email core.NormalizedEmail, account core.MailAccount, loc *time.Location) []string {
+	return formatEmailAtLang(email, account, loc, translator{lang: langEN})
+}
+
+func formatEmailAtLang(email core.NormalizedEmail, account core.MailAccount, loc *time.Location, tr translator) []string {
 	if loc == nil {
 		loc = defaultDisplayLocation()
 	}
 	c := newChunker(chunkBudget)
-	c.writeHTML("<b>New mail received</b>")
-	c.writeRaw("Account: " + account.Address)
-	c.writeRaw("Provider: " + string(email.ProviderType))
-	c.writeRaw("From: " + formatAddress(email.From))
+	c.writeHTML(tr.t("email.title"))
+	c.writeRaw(tr.t("email.account", account.Address))
+	c.writeRaw(tr.t("email.provider", string(email.ProviderType)))
+	c.writeRaw(tr.t("email.from", formatAddress(email.From)))
 	vendor := strings.TrimSpace(email.Classification.ProviderID)
 	if vendor == "" {
-		vendor = "unknown"
+		vendor = tr.t("common.unknown")
 	}
 	category := strings.TrimSpace(email.Classification.Category)
 	if category == "" {
-		category = "uncategorized"
+		category = tr.t("common.uncategorized")
 	}
-	c.writeRaw("Vendor: " + vendor + " / " + category)
-	c.writeRaw("Subject: " + email.Subject)
-	c.writeRaw("Time: " + email.ReceivedAt.In(loc).Format(displayTimeLayout))
+	c.writeRaw(tr.t("email.vendor", vendor, category))
+	c.writeRaw(tr.t("email.subject", email.Subject))
+	c.writeRaw(tr.t("email.time", email.ReceivedAt.In(loc).Format(displayTimeLayout)))
 	c.writeHTML("──────────")
 
 	body := email.TextBody
@@ -193,7 +199,7 @@ func formatEmailAt(email core.NormalizedEmail, account core.MailAccount, loc *ti
 		body = htmlToText(email.HTMLBody)
 	}
 	if strings.TrimSpace(body) == "" {
-		body = "(no text content)"
+		body = tr.t("email.noText")
 	}
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	for _, line := range strings.Split(body, "\n") {
@@ -201,126 +207,118 @@ func formatEmailAt(email core.NormalizedEmail, account core.MailAccount, loc *ti
 	}
 
 	if len(email.Links) > 0 {
-		c.writeHTML("<b>Links</b>")
+		c.writeHTML(tr.t("email.links"))
 		for _, link := range email.Links {
-			c.writeRaw("• " + link)
+			c.writeRaw(tr.t("email.bullet", link))
 		}
 	}
-	c.writeHTML(fmt.Sprintf("<b>Attachments (%d)</b>", len(email.Attachments)))
+	c.writeHTML(tr.t("email.attachments", len(email.Attachments)))
 	for _, a := range email.Attachments {
-		line := "• " + a.Filename
+		line := tr.t("email.bullet", a.Filename)
 		if a.ContentType != "" {
-			line += " (" + a.ContentType + ")"
+			line += tr.t("email.attachmentType", a.ContentType)
 		}
 		if a.Size > 0 {
-			line += fmt.Sprintf(" %d bytes", a.Size)
+			line += tr.t("email.attachmentSize", a.Size)
 		}
 		c.writeRaw(line)
 	}
 	return c.finish()
 }
 
-// FormatInvoice renders the enhanced invoice notification. It includes every
-// item, price, discount, host and service period plus the manual status note.
-// Times use the default display zone (Asia/Taipei); the Bot uses its dynamic
-// configured zone through formatInvoiceAt.
+// FormatInvoice renders the enhanced invoice notification in English. It keeps
+// the original signature for external acceptance; the Bot uses
+// formatInvoiceAtLang. It includes every item, price, discount, host and service
+// period plus the manual status note. Times use the default display zone
+// (Asia/Taipei).
 func FormatInvoice(inv core.Invoice, account core.MailAccount) []string {
 	return formatInvoiceAt(inv, account, defaultDisplayLocation())
 }
 
+// formatInvoiceAt renders an English invoice notification with the supplied
+// zone.
 func formatInvoiceAt(inv core.Invoice, account core.MailAccount, loc *time.Location) []string {
+	return formatInvoiceAtLang(inv, account, loc, translator{lang: langEN})
+}
+
+func formatInvoiceAtLang(inv core.Invoice, account core.MailAccount, loc *time.Location, tr translator) []string {
 	if loc == nil {
 		loc = defaultDisplayLocation()
 	}
 	c := newChunker(chunkBudget)
-	c.writeHTML("<b>Invoice</b>")
+	c.writeHTML(tr.t("invoice.title"))
 	c.writeRaw(inv.Number)
-	c.writeRaw("Provider: " + inv.ProviderID)
-	c.writeRaw("Account: " + account.Address)
-	c.writeRaw("Status: " + statusText(inv.Status))
+	c.writeRaw(tr.t("invoice.provider", inv.ProviderID))
+	c.writeRaw(tr.t("invoice.account", account.Address))
+	c.writeRaw(tr.t("invoice.status", tr.invoiceStatus(inv.Status)))
 	if inv.AmountDue.Currency != "" {
-		c.writeRaw("Amount due: " + core.FormatMoney(inv.AmountDue))
+		c.writeRaw(tr.t("invoice.amountDue", core.FormatMoney(inv.AmountDue)))
 	}
 	if inv.SubTotal != nil {
-		c.writeRaw("Subtotal: " + core.FormatMoney(*inv.SubTotal))
+		c.writeRaw(tr.t("invoice.subtotal", core.FormatMoney(*inv.SubTotal)))
 	}
 	if inv.Credit != nil {
-		c.writeRaw("Credit: " + core.FormatMoney(*inv.Credit))
+		c.writeRaw(tr.t("invoice.credit", core.FormatMoney(*inv.Credit)))
 	}
 	if inv.Total != nil {
-		c.writeRaw("Total: " + core.FormatMoney(*inv.Total))
+		c.writeRaw(tr.t("invoice.total", core.FormatMoney(*inv.Total)))
 	}
 	if inv.AccountBalance != nil {
-		c.writeRaw("Account balance: " + core.FormatMoney(*inv.AccountBalance))
+		c.writeRaw(tr.t("invoice.balance", core.FormatMoney(*inv.AccountBalance)))
 	}
 	if inv.CreatedDate != nil {
-		c.writeRaw("Created: " + string(*inv.CreatedDate))
+		c.writeRaw(tr.t("invoice.created", string(*inv.CreatedDate)))
 	}
 	if inv.DueDate != "" {
-		c.writeRaw("Due: " + string(inv.DueDate))
+		c.writeRaw(tr.t("invoice.due", string(inv.DueDate)))
 	}
 	if inv.PaymentMethod != nil && *inv.PaymentMethod != "" {
-		c.writeRaw("Payment method: " + *inv.PaymentMethod)
+		c.writeRaw(tr.t("invoice.paymentMethod", *inv.PaymentMethod))
 	}
 	if inv.ConfirmedAt != nil {
-		c.writeRaw("Confirmed at: " + inv.ConfirmedAt.In(loc).Format(displayTimeLayout))
+		c.writeRaw(tr.t("invoice.confirmedAt", inv.ConfirmedAt.In(loc).Format(displayTimeLayout)))
 	}
 
 	for i, item := range inv.Items {
-		c.writeHTML(fmt.Sprintf("<b>Item %d</b>", i+1))
+		c.writeHTML(tr.t("invoice.item", i+1))
 		if item.ProductModel != nil {
-			c.writeRaw("Model: " + *item.ProductModel)
+			c.writeRaw(tr.t("invoice.model", *item.ProductModel))
 		}
 		if item.Hostname != nil {
-			c.writeRaw("Host: " + *item.Hostname)
+			c.writeRaw(tr.t("invoice.host", *item.Hostname))
 		}
 		if item.OperatingSystem != nil {
-			c.writeRaw("OS: " + *item.OperatingSystem)
+			c.writeRaw(tr.t("invoice.os", *item.OperatingSystem))
 		}
 		if item.ServiceStart != nil || item.ServiceEnd != nil {
-			c.writeRaw("Period: " + dateText(item.ServiceStart) + " – " + dateText(item.ServiceEnd))
+			c.writeRaw(tr.t("invoice.period", dateText(item.ServiceStart, tr), dateText(item.ServiceEnd, tr)))
 		}
 		if item.OriginalPrice != nil {
-			c.writeRaw("Original price: " + core.FormatMoney(*item.OriginalPrice))
+			c.writeRaw(tr.t("invoice.originalPrice", core.FormatMoney(*item.OriginalPrice)))
 		}
 		if item.DiscountAmount != nil {
-			c.writeRaw("Discount: " + core.FormatMoney(*item.DiscountAmount))
+			c.writeRaw(tr.t("invoice.discount", core.FormatMoney(*item.DiscountAmount)))
 		}
 		if item.FinalPrice != nil {
-			c.writeRaw("Final price: " + core.FormatMoney(*item.FinalPrice))
+			c.writeRaw(tr.t("invoice.finalPrice", core.FormatMoney(*item.FinalPrice)))
 		}
 		if item.PromotionalCode != nil && *item.PromotionalCode != "" {
-			c.writeRaw("Promo code: " + *item.PromotionalCode)
+			c.writeRaw(tr.t("invoice.promo", *item.PromotionalCode))
 		}
 		if item.DiscountType != nil && *item.DiscountType != "" {
-			c.writeRaw("Discount type: " + *item.DiscountType)
+			c.writeRaw(tr.t("invoice.discountType", *item.DiscountType))
 		}
 	}
 
 	if len(inv.ReviewReasons) > 0 {
-		c.writeHTML("<b>Review required</b>")
+		c.writeHTML(tr.t("invoice.reviewRequired"))
 		for _, reason := range inv.ReviewReasons {
-			c.writeRaw("• " + reason)
+			c.writeRaw(tr.t("email.bullet", reason))
 		}
 	}
 	c.writeHTML("──────────")
-	c.writeRaw("Payment status is manual: only an authorized user can mark this invoice paid.")
+	c.writeRaw(tr.t("invoice.manualNote"))
 	return c.finish()
-}
-
-func statusText(status core.InvoiceStatus) string {
-	switch status {
-	case core.PendingConfirmation:
-		return "PENDING_CONFIRMATION (manual confirmation required)"
-	case core.PaidConfirmed:
-		return "PAID_CONFIRMED (manually confirmed)"
-	case core.ReviewRequired:
-		return "REVIEW_REQUIRED"
-	case core.Cancelled:
-		return "CANCELLED"
-	default:
-		return string(status)
-	}
 }
 
 func formatAddress(a core.Address) string {
@@ -334,9 +332,9 @@ func formatAddress(a core.Address) string {
 	}
 }
 
-func dateText(d *core.Date) string {
+func dateText(d *core.Date, tr translator) string {
 	if d == nil || *d == "" {
-		return "?"
+		return tr.t("invoice.dateUnknown")
 	}
 	return string(*d)
 }
