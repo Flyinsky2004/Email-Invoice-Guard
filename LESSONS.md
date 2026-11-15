@@ -105,3 +105,33 @@
 - 修复 commit：4fc35ed。
 - Done right: GET /me/messages/{id}/attachments?$select=id,name,contentType,size 遍历 nextLink，不请求 contentBytes；两页回归测试；附件 ID 用 account+message+graphID 哈希生成 32-hex，避免跨账号碰撞。
 - Seen 1× (2026-11-15).
+
+**IMAP BODY[part] 不保证包含 MIME 头，文本部件必须同时取 BODY[part.MIME] 拼接解码，且禁止截断正文。**
+- T02 初版对 multipart 文本部件只取 BODY[part] 后直接 message.Read，并用 LimitReader 8MiB；Codex 审查指出 base64/quoted-printable 中文正文会被当作 header 解析或静默截断，BODYSTRUCTURE 缺失时 BODY[] 兜底还会下载完整附件。
+- 修复 commit：待定位（本次 T02 提交）。
+- Done right: 每个文本部件同时 FETCH BODY.PEEK[n] 与 BODY.PEEK[n.MIME]，拼接后交给 go-message 解码；io.ReadAll 完整读取；BODYSTRUCTURE 缺失直接报错；真实 TLS IMAP 测试断言中文全文、附件元数据且不请求附件 section。
+- Seen 1× (2026-11-15).
+
+**go-imap imapserver 在客户端请求 Extended BODYSTRUCTURE 时必须写 Extended 非 nil 结构，text/* 还必须带 Text.NumLines。**
+- T02 测试服务器初版未设置 Extended/Text，imapserver panic "client requested extended body structure but a non-extended one is written back"，客户端报 "expected number64, got N"。
+- 修复 commit：待定位（本次 T02 提交）。
+- Done right: 测试用 BodyStructureSinglePart 设置 Extended 与 Text{NumLines}，多部件设置 BodyStructureMultiPartExt。
+- Seen 1× (2026-11-15).
+
+**IMAP 客户端库会覆盖连接 deadline，必须用 net.Conn 包装器把每次 SetDeadline 钳制到 min(ctx deadline, now+cfg.Timeout)。**
+- T02 初版只在 TCP Dial 使用 cfg.Timeout，go-imap 等待 greeting 时自行设置 30s 读超时，静默 TLS/IMAP 对端可挂起远超配置超时；Codex 审查指出。
+- 修复 commit：待定位（本次 T02 提交）。
+- Done right: deadlineConn 包装 SetDeadline/SetReadDeadline/SetWriteDeadline，测试静默 TLS 与静默 greeting 对端均在配置超时内失败，且更短的 ctx deadline 优先。
+- Seen 1× (2026-11-15).
+
+**QQ 重复提交同一地址或移除后重加必须复用 (provider,address) 已有账号 ID 并校验 owner，不能每次 NewID。**
+- T02 初版每次 onboarding 都 core.NewID()，会触发 mail_accounts UNIQUE(provider,address)；Codex 审查指出。
+- 修复 commit：待定位（本次 T02 提交）。
+- Done right: 持久化事务内 ListAccounts 查找同 provider+address，owner 不符返回 ErrUnauthorized，复用 ID 更新凭证并保留历史；测试覆盖同 owner 复用、异 owner 拒绝与事务回滚。
+- Seen 1× (2026-11-15).
+
+**文本解码失败不得返回空字符串；必须保留原始/部分解码内容并标记，否则游标提交会永久丢正文。**
+- T02 验收退修：decodeText 在 message.Read/io.ReadAll 错误时返回 ""，fetchEmail 继续并提交游标，永久丢失该文本部件；joinMIMEPart 以正文开头猜测自带头也会误判正文。
+- 修复 commit：待定位（本次退修提交）。
+- Done right: 解码失败返回原始编码文本（io.ReadAll 有 partial 时保留 partial+raw），写入 X-Invoice-Guard-Decode-Error 标记并 Warn 日志；MIME 头缺失时由 BODYSTRUCTURE 合成；joinMIMEPart 无条件拼接；损坏 base64/QP、无 MIME 头、正文以 Content-Type 开头均有测试。
+- Seen 1× (2026-11-15).
