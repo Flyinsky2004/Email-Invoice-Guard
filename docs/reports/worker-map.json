@@ -154,5 +154,18 @@
     "agent_stopped": true,
     "worktree_removed": true,
     "branch_removed": true
+  },
+  {
+    "task": "T13",
+    "branch": "task/T13-manual-integration",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t13",
+    "terminal": "t107",
+    "name": "eig-t13",
+    "launched_at": "2026-11-15T15:36:00+00:00",
+    "spec": "docs/tasks/T13.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   }
 ]
