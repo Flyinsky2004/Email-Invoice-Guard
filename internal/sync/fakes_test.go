@@ -522,3 +522,19 @@ func singlePageSource(emails ...core.NormalizedEmail) *fakeSource {
 		},
 	}
 }
+
+func (r *txRepo) ListFolders(ctx context.Context, accountID string) ([]core.MailFolder, error) {
+	return append([]core.MailFolder(nil), r.st.folders[accountID]...), nil
+}
+func (r *txRepo) SaveFolder(ctx context.Context, folder core.MailFolder) error {
+	folders := r.st.folders[folder.AccountID]
+	for i := range folders {
+		if folders[i].ID == folder.ID {
+			folders[i] = folder
+			r.st.folders[folder.AccountID] = folders
+			return nil
+		}
+	}
+	r.st.folders[folder.AccountID] = append(folders, folder)
+	return nil
+}

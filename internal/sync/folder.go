@@ -32,34 +32,44 @@ func (e *Engine) accountFolders(ctx context.Context, source core.MailSource, acc
 		return stored, nil
 	}
 
-	byID := make(map[string]core.MailFolder, len(stored)+len(discovered))
-	order := make([]string, 0, len(stored)+len(discovered))
-	for _, folder := range stored {
-		if _, ok := byID[folder.ID]; !ok {
-			order = append(order, folder.ID)
+	var folders []core.MailFolder
+	err = e.store.Transaction(ctx, func(tx core.Repository) error {
+		// Discovery performs remote I/O. Re-read preferences under the write
+		// transaction so a user toggle during that I/O cannot be overwritten.
+		live, err := tx.ListFolders(ctx, account.ID)
+		if err != nil && !errors.Is(err, core.ErrNotFound) {
+			return storageError()
 		}
-		byID[folder.ID] = folder
-	}
-	for _, folder := range discovered {
-		folder.AccountID = account.ID
-		if existing, ok := byID[folder.ID]; ok {
-			// Never overwrite an explicit user choice (including a disabled
-			// Inbox); refresh only descriptive metadata.
-			folder.Enabled = existing.Enabled
-		} else {
-			folder.Enabled = isInboxFolder(folder)
-			order = append(order, folder.ID)
+		byID := make(map[string]core.MailFolder, len(live)+len(discovered))
+		order := make([]string, 0, len(live)+len(discovered))
+		for _, folder := range live {
+			if _, ok := byID[folder.ID]; !ok {
+				order = append(order, folder.ID)
+			}
+			byID[folder.ID] = folder
 		}
-		byID[folder.ID] = folder
-		if err := e.store.SaveFolder(ctx, folder); err != nil {
-			return nil, storageError()
+		for _, folder := range discovered {
+			folder.AccountID = account.ID
+			if existing, ok := byID[folder.ID]; ok {
+				folder.Enabled = existing.Enabled
+			} else {
+				folder.Enabled = isInboxFolder(folder)
+				order = append(order, folder.ID)
+			}
+			byID[folder.ID] = folder
+			if err := tx.SaveFolder(ctx, folder); err != nil {
+				return storageError()
+			}
 		}
+		for _, id := range order {
+			folders = append(folders, byID[id])
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	folders := make([]core.MailFolder, 0, len(order))
-	for _, id := range order {
-		folders = append(folders, byID[id])
-	}
 	return folders, nil
 }
 

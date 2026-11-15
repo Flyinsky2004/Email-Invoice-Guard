@@ -19,15 +19,23 @@ import (
 )
 
 type source struct {
-	messages []core.NormalizedEmail
-	value    string
+	messages   []core.NormalizedEmail
+	value      string
+	discover   func()
+	beforeSync func()
 }
 
 func (*source) Type() core.ProviderType { return core.QQ }
-func (*source) ListFolders(_ context.Context, a core.MailAccount) ([]core.MailFolder, error) {
+func (s *source) ListFolders(_ context.Context, a core.MailAccount) ([]core.MailFolder, error) {
+	if s.discover != nil {
+		s.discover()
+	}
 	return []core.MailFolder{{ID: "inbox", AccountID: a.ID, Name: "INBOX", Role: "inbox", Enabled: true}}, nil
 }
 func (s *source) Sync(_ context.Context, a core.MailAccount, f core.MailFolder, c core.SyncCursor) (core.SyncBatch, error) {
+	if s.beforeSync != nil {
+		s.beforeSync()
+	}
 	c.AccountID = a.ID
 	c.FolderID = f.ID
 	c.Value = s.value
@@ -103,7 +111,8 @@ func TestPipelineCommitRollbackAndRestart(t *testing.T) {
 	a := account(t, s)
 	now := time.Now().UTC()
 	src := &source{value: "page-finished", messages: []core.NormalizedEmail{mail("invoice-one", fixture(t), now)}}
-	wrapped := &rollbackStore{Store: s, fail: true}
+	wrapped := &rollbackStore{Store: s}
+	src.beforeSync = func() { wrapped.fail = true }
 	e := engine(wrapped, src)
 	if err := e.SyncAccount(t.Context(), a.ID); err == nil {
 		t.Fatal("expected atomic page failure")
@@ -120,6 +129,7 @@ func TestPipelineCommitRollbackAndRestart(t *testing.T) {
 		t.Fatal("outbox escaped rollback")
 	}
 	wrapped.fail = false
+	src.beforeSync = nil
 	if err := e.SyncAccount(t.Context(), a.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -246,5 +256,44 @@ func TestHistoricalAndReviewMailRemainAccessibleWithoutReminders(t *testing.T) {
 	reminders, err := s.ListReminders(t.Context(), bills[0].ID)
 	if err != nil || len(reminders) != 0 {
 		t.Fatalf("review must never create daily payment tasks %+v %v", reminders, err)
+	}
+}
+
+func TestConcurrentFolderPreferenceSurvivesDiscovery(t *testing.T) {
+	s, _, _ := openStore(t)
+	a := account(t, s)
+	folder := core.MailFolder{ID: "inbox", AccountID: a.ID, Name: "INBOX", Role: "inbox", Enabled: true}
+	if err := s.SaveFolder(t.Context(), folder); err != nil {
+		t.Fatal(err)
+	}
+	src := &source{value: "1", discover: func() {
+		folder.Enabled = false
+		if err := s.SaveFolder(t.Context(), folder); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	if err := engine(s, src).SyncAccount(t.Context(), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	folders, err := s.ListFolders(t.Context(), a.ID)
+	if err != nil || len(folders) != 1 || folders[0].Enabled {
+		t.Fatalf("discovery overwrote a concurrent user choice: %+v %v", folders, err)
+	}
+}
+func TestDamagedMIMERequiresReviewWithRealRepositories(t *testing.T) {
+	s, _, _ := openStore(t)
+	a := account(t, s)
+	m := mail("damaged", fixture(t), time.Now().UTC())
+	m.Headers = map[string][]string{"x-invoice-guard-decode-error": {"mime-read-failed"}}
+	if err := engine(s, &source{value: "1", messages: []core.NormalizedEmail{m}}).SyncAccount(t.Context(), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	bills, err := s.ListInvoices(t.Context(), core.InvoiceFilter{})
+	if err != nil || len(bills) != 1 || bills[0].Status != core.ReviewRequired {
+		t.Fatalf("damaged text became a formal payment task %+v %v", bills, err)
+	}
+	all, _ := s.ListAssets(t.Context(), core.AssetFilter{})
+	if len(all) != 0 || count(t, s, "email_parse_failures") != 1 || count(t, s, "delivery_outbox") != 1 {
+		t.Fatal("review diagnostics/full mail must persist without asset inference")
 	}
 }
