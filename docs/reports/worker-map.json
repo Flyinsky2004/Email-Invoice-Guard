@@ -141,5 +141,18 @@
     "agent_stopped": true,
     "worktree_removed": true,
     "branch_removed": true
+  },
+  {
+    "task": "T12",
+    "branch": "task/T12-telegram-manual-reminders",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t12",
+    "terminal": "t104",
+    "name": "eig-t12",
+    "launched_at": "2026-11-15T15:18:00+00:00",
+    "spec": "docs/tasks/T12.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   }
 ]
