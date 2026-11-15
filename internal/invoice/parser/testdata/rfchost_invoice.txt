@@ -1,0 +1,25 @@
+Dear Lem John,
+
+This is a notice that an invoice has been generated on 2026/10/14.
+
+Your payment method is: 支付宝 | Alipay+
+
+Invoice #143058
+Amount Due: $6.84 USD
+Due Date: 2026/10/24
+
+Invoice Items
+
+JP2-CO-Micro - lk9I8F2Mdvc.rfchost.com
+(2026/10/24 - 2026/11/23) $11.40 USD
+
+OS: Debian-12.0_x64
+
+Promotional Code: 我是高手我不需要发工单
+- 40.00% Recurring Discount $-4.56 USD
+
+Sub Total: $6.84 USD
+Credit: $0.00 USD
+Total: $6.84 USD
+
+https://my.rfchost.com/viewinvoice.php?id=143058
