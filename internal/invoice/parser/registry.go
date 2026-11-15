@@ -82,3 +82,18 @@ func (r *Registry) Parse(ctx context.Context, email core.NormalizedEmail) (*core
 	}
 	return nil, core.ErrNoMatch
 }
+
+// ValidateInvoiceURL delegates URL trust to registered merchant parsers.
+func (r *Registry) ValidateInvoiceURL(inv core.Invoice) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.parsers {
+		if !strings.EqualFold(p.Vendor(), inv.ProviderID) {
+			continue
+		}
+		if policy, ok := p.(core.InvoiceURLValidator); ok && policy.ValidateInvoiceURL(inv) {
+			return true
+		}
+	}
+	return false
+}

@@ -110,3 +110,7 @@ type AccountOnboarding interface {
 type AssetLinker interface {
 	Reconcile(context.Context, Repository, Invoice) error
 }
+
+// InvoiceURLValidator is an optional merchant policy implemented by parsers
+// and delegated by registries. Adding a vendor never needs Telegram changes.
+type InvoiceURLValidator interface{ ValidateInvoiceURL(Invoice) bool }

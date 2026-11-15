@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -279,7 +280,8 @@ func (s *fakeSyncer) SyncAccount(context.Context, string) error { return nil }
 func (s *fakeSyncer) Run(context.Context) error                 { return nil }
 
 type fakeParsers struct {
-	infos []core.ParserInfo
+	urlCheck func(core.Invoice) bool
+	infos    []core.ParserInfo
 }
 
 func (p *fakeParsers) Parse(context.Context, core.NormalizedEmail) (*core.Invoice, error) {
@@ -550,4 +552,51 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("condition not met within %s", timeout)
+}
+
+func (p *fakeParsers) ValidateInvoiceURL(inv core.Invoice) bool {
+	if p.urlCheck != nil {
+		return p.urlCheck(inv)
+	}
+	return trustedInvoiceURL(inv.URL)
+}
+
+// Trusted merchant invoice URL shape, matching the RFCHOST parser fixture:
+// https://my.rfchost.com/viewinvoice.php?id=143058
+const (
+	trustedInvoiceHost = "my.rfchost.com"
+	trustedInvoicePath = "/viewinvoice.php"
+)
+
+// trustedInvoiceURL accepts only the exact merchant invoice shape. Any extra
+// query parameter (for example a redirect target), duplicate id, non-numeric
+// id, userinfo, non-443 port or fragment is rejected.
+func trustedInvoiceURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "https" || !strings.EqualFold(u.Hostname(), trustedInvoiceHost) {
+		return false
+	}
+	if u.User != nil || (u.Port() != "" && u.Port() != "443") || u.Fragment != "" {
+		return false
+	}
+	if u.Path != trustedInvoicePath {
+		return false
+	}
+	query := u.Query()
+	if len(query) != 1 {
+		return false
+	}
+	ids, ok := query["id"]
+	if !ok || len(ids) != 1 || ids[0] == "" {
+		return false
+	}
+	for _, r := range ids[0] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

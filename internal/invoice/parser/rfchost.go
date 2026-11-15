@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"email-invoice-guard/internal/core"
@@ -87,4 +88,13 @@ func senderHost(address string) string {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(address[at+1:]))
+}
+
+// ValidateInvoiceURL keeps merchant-specific payment URL rules beside the template.
+func (p *rfchostParser) ValidateInvoiceURL(inv core.Invoice) bool {
+	if !strings.EqualFold(inv.ProviderID, rfchostProviderID) || !trustedInvoiceURL(inv.URL) {
+		return false
+	}
+	u, err := url.Parse(inv.URL)
+	return err == nil && u.Query().Get("id") == inv.Number
 }

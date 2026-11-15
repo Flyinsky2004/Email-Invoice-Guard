@@ -36,3 +36,7 @@ IMAPConfig.TrustedProxyCIDRs []string authorizes exact proxy network peers to as
 ## Integration clarifications
 
 DeliveryPayload.Kind values are email, invoice, reminder (not worker-specific synonyms). A newly received email referencing an existing invoice is delivered once as invoice with persisted current status; it does not reset payment state. RecordParseFailure arguments are emailID, providerID, bounded reason. InvoiceFilter/AssetFilter Limit<=0 means all matching internal records (reminder and asset reconciliation must not silently cap100); positive limits are bounded for user command listings. EmailFilter remains bounded by default.
+
+## Approved change CR002 — vendor URL policy (Codex integration)
+
+Added optional core.InvoiceURLValidator { ValidateInvoiceURL(Invoice) bool }. No existing interface or constructor signatures change. Merchant parsers own their URL policy; Registry delegates by matching Vendor/ProviderID; Telegram performs generic HTTPS checks and consults the injected registry policy, failing closed without one. RFCHOST enforces exact host/path/single matching invoice id. A future parser can enable its trusted payment links by implementing the optional policy without modifying Telegram or pipeline code.
