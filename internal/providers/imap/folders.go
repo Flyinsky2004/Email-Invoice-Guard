@@ -102,8 +102,14 @@ func roleFor(name string, attrs []imapv2.MailboxAttr) string {
 }
 
 // folderID derives a stable 32-hex identifier from the account and mailbox
-// name so folder preferences survive repeated LIST calls.
+// name so folder preferences survive repeated LIST calls. Only INBOX is
+// case-insensitive (RFC 9051); other mailbox names keep the server's original
+// case because "Foo" and "foo" are distinct mailboxes with distinct UID state.
 func folderID(accountID, name string) string {
-	sum := sha256.Sum256([]byte(accountID + "\x00" + strings.ToLower(name)))
+	key := name
+	if strings.EqualFold(strings.TrimSpace(name), "INBOX") {
+		key = "INBOX"
+	}
+	sum := sha256.Sum256([]byte(accountID + "\x00" + key))
 	return hex.EncodeToString(sum[:16])
 }
