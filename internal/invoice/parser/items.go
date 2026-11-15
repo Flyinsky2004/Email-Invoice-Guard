@@ -14,7 +14,7 @@ var (
 	itemPeriodRe   = regexp.MustCompile(`^\(\s*(\d{4}[/-]\d{2}[/-]\d{2})\s*-\s*(\d{4}[/-]\d{2}[/-]\d{2})\s*\)\s*(.+)$`)
 	itemOSRe       = regexp.MustCompile(`(?i)^OS\s*:\s*(.+)$`)
 	itemPromoRe    = regexp.MustCompile(`(?i)^Promotional Code\s*:\s*(.*)$`)
-	itemDiscountRe = regexp.MustCompile(`^[-–—]?\s*([0-9]+(?:\.[0-9]+)?)\s*%\s*(.*?)\s*Discount\s+(.+)$`)
+	itemDiscountRe = regexp.MustCompile(`^[-–—]?\s*([0-9]+(?:\.[0-9]+)?)\s*%\s*(.*?Discount)\s+(.+)$`)
 )
 
 // parseItems walks the line stream and attaches each discount and promotional

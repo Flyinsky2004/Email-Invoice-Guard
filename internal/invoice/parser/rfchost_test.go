@@ -189,7 +189,7 @@ func TestParseFixtureAllFields(t *testing.T) {
 	if item.PromotionalCode == nil || *item.PromotionalCode != "我是高手我不需要发工单" {
 		t.Fatalf("promo code = %v", item.PromotionalCode)
 	}
-	if item.DiscountType == nil || *item.DiscountType != "Recurring" {
+	if item.DiscountType == nil || *item.DiscountType != "Recurring Discount" {
 		t.Fatalf("discount type = %v", item.DiscountType)
 	}
 	if item.DiscountBasisPoints == nil || *item.DiscountBasisPoints != 4000 {

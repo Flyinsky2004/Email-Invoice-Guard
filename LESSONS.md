@@ -147,3 +147,9 @@
 - 修复 commit：待定位（本次 T04 提交）。
 - Done right: 测试凭据一律使用明显非机密的字面量（如 user:pass），不引用任何密钥占位符。
 - Seen 1× (2026-11-15).
+
+**业务字段必须按样例保留完整词组，不能只截取限定词。**
+- T04 验收退修：DiscountType 只存了 "Recurring"，样例要求 "Recurring Discount"；items.go 正则把 "Discount" 放在捕获组外，测试也错误期望 "Recurring"。
+- 修复 commit：本次 T04 修复提交。
+- Done right: 捕获组包含完整优惠方式词组（如 `(.*?Discount)`），测试断言精确样例值。
+- Seen 1× (2026-11-15).
