@@ -32,9 +32,15 @@ func (b *Bot) handleMessage(ctx context.Context, m *message) {
 		return
 	}
 	text := strings.TrimSpace(m.Text)
-	if b.manual != nil && text != "" && !strings.HasPrefix(text, "/") {
-		if rep, handled := b.wizardInput(ctx, m); handled {
-			b.sendReply(ctx, m.Chat.ID, rep, "wizard")
+	if text != "" && !strings.HasPrefix(text, "/") {
+		if b.manual != nil {
+			if rep, handled := b.wizardInput(ctx, m); handled {
+				b.sendReply(ctx, m.Chat.ID, rep, "wizard")
+				return
+			}
+		}
+		if rep, chatID, messageID, handled := b.menuInput(ctx, m); handled {
+			b.deliverMenuReply(ctx, chatID, messageID, rep)
 			return
 		}
 	}
@@ -42,12 +48,44 @@ func (b *Bot) handleMessage(ctx context.Context, m *message) {
 	if cmd == "" {
 		return
 	}
+	b.clearMenuInput(m.Chat.ID, m.From.ID)
 	rep, err := b.runCommand(ctx, cmd, args, m.From.ID, m.Chat.ID)
 	if err != nil {
 		b.log.Warn("telegram: command failed", "command", cmd, "error", err.Error())
 		rep = reply{parts: []string{b.text(ctx, "error.commandFailed")}}
 	}
+	rep = b.withMenuHome(ctx, rep, cmd)
 	b.sendReply(ctx, m.Chat.ID, rep, cmd)
+}
+
+// menuHomeCommands lists the slash commands whose reply should carry a Home
+// button, so a command result can lead straight back into the menu bubble.
+// Commands that open a wizard or a two-stage confirmation are excluded.
+var menuHomeCommands = map[string]bool{
+	"accounts": true, "latest": true, "search": true, "invoices": true,
+	"pending": true, "paid": true, "overdue": true, "assets": true,
+	"providers": true, "status": true, "settings": true, "sync": true,
+	"add": true, "reminders": true, "reminder": true, "reminder_pending": true,
+	"reminder_history": true, "reminder_pause": true, "reminder_resume": true,
+	"reminder_delete": true, "reminder_paid": true,
+}
+
+// withMenuHome appends a Home button to a command reply when the command is
+// menu-addressable. The menu views already carry their own navigation.
+func (b *Bot) withMenuHome(ctx context.Context, rep reply, cmd string) reply {
+	if !menuHomeCommands[cmd] {
+		return rep
+	}
+	home := inlineButton{
+		Text:         b.text(ctx, "menu.button.home"),
+		CallbackData: menuCallbackData(menuHome, "", ""),
+	}
+	if rep.keyboard == nil {
+		rep.keyboard = &inlineKeyboard{InlineKeyboard: [][]inlineButton{{home}}}
+		return rep
+	}
+	rep.keyboard.InlineKeyboard = append(rep.keyboard.InlineKeyboard, []inlineButton{home})
+	return rep
 }
 
 func (b *Bot) sendReply(ctx context.Context, chatID int64, rep reply, label string) {
@@ -74,14 +112,10 @@ func parseCommand(text string) (string, []string) {
 func (b *Bot) runCommand(ctx context.Context, cmd string, args []string, userID, chatID int64) (reply, error) {
 	tr := b.tr(ctx)
 	switch cmd {
-	case "start":
-		return reply{parts: []string{tr.t("start.welcome")}}, nil
+	case "start", "menu":
+		return b.menuHomeReply(ctx), nil
 	case "help":
-		text := tr.t("help.body")
-		if b.manual != nil {
-			text += "\n" + tr.t("help.manualBody")
-		}
-		return reply{parts: []string{text}}, nil
+		return b.menuHelpReply(ctx), nil
 	case "add":
 		return b.commandAdd(ctx, args, userID)
 	case "accounts":

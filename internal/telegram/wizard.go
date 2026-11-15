@@ -517,18 +517,19 @@ func (b *Bot) finishWizard(ctx context.Context, tr translator, st *wizardState) 
 	if st.HasAmount {
 		input.Amount = &core.Money{Minor: st.AmountMinor, Currency: st.Currency}
 	}
+	nav := &inlineKeyboard{InlineKeyboard: [][]inlineButton{menuNavRow(tr, menuReminders, "")}}
 	if st.PlanID != "" {
 		plan, err := b.manual.UpdatePlan(ctx, st.UserID, st.PlanID, input)
 		if err != nil {
 			return reply{}, err
 		}
-		return reply{parts: []string{tr.t("wizard.planUpdated", escape(plan.Title), plan.ID)}}, nil
+		return reply{parts: []string{tr.t("wizard.planUpdated", escape(plan.Title), plan.ID)}, keyboard: nav}, nil
 	}
 	plan, err := b.manual.CreatePlan(ctx, st.UserID, input)
 	if err != nil {
 		return reply{}, err
 	}
-	return reply{parts: []string{tr.t("wizard.planCreated", escape(plan.Title), plan.ID)}}, nil
+	return reply{parts: []string{tr.t("wizard.planCreated", escape(plan.Title), plan.ID)}, keyboard: nav}, nil
 }
 
 // dropWizard removes the active wizard and reports whether one existed.
@@ -575,7 +576,9 @@ func (b *Bot) handleWizardCallback(ctx context.Context, cq *callbackQuery, actio
 		delete(b.wizards, key)
 		b.wizardMu.Unlock()
 		b.answerCallback(ctx, cq.ID, tr.t("wizard.cancelledShort"), false)
-		b.editOrSend(ctx, cq, tr.t("manual.wizardCancelled"), nil)
+		b.editOrSend(ctx, cq, tr.t("manual.wizardCancelled"), &inlineKeyboard{
+			InlineKeyboard: [][]inlineButton{menuNavRow(tr, menuReminders, "")},
+		})
 	case cbWizardBack:
 		st.Step = previousWizardStep(st)
 		b.prepareWizardStep(ctx, tr, st)

@@ -54,10 +54,10 @@ func TestDefaultLanguageIsSimplifiedChinese(t *testing.T) {
 		t.Fatalf("default language = %q, want %q", got, langZH)
 	}
 	text := sentText(env.runMessage("/start"))
-	if !strings.Contains(text, "已就绪") {
+	if !strings.Contains(text, "选择一个操作") {
 		t.Fatalf("default start reply is not Chinese: %q", text)
 	}
-	if strings.Contains(text, "Invoice Guard is ready") {
+	if strings.Contains(text, "Choose an action") {
 		t.Fatalf("English leaked into the default Chinese path: %q", text)
 	}
 }
@@ -93,7 +93,7 @@ func TestSettingsLanguagePersistsAndSwitches(t *testing.T) {
 	if got := env.bot.language(ctx); got != langEN {
 		t.Fatalf("language did not switch: %q", got)
 	}
-	if text := sentText(env.runMessage("/start")); !strings.Contains(text, "Invoice Guard is ready") {
+	if text := sentText(env.runMessage("/start")); !strings.Contains(text, "Choose an action") {
 		t.Fatalf("English switch did not apply: %q", text)
 	}
 

@@ -46,6 +46,9 @@ type Bot struct {
 
 	wizardMu sync.Mutex
 	wizards  map[string]*wizardState
+
+	inputMu sync.Mutex
+	inputs  map[string]*menuInputState
 }
 
 // New constructs a Bot without manual recurring reminders. It keeps the exact
@@ -87,6 +90,7 @@ func NewWithManual(store core.Store, payment core.PaymentConfirmationService, sy
 		now:        time.Now,
 		sleep:      sleepCtx,
 		wizards:    make(map[string]*wizardState),
+		inputs:     make(map[string]*menuInputState),
 	}
 }
 
@@ -252,6 +256,52 @@ func (b *Bot) handleUpdate(ctx context.Context, u update) {
 		b.handleCallback(ctx, u.CallbackQuery)
 	case u.Message != nil:
 		b.handleMessage(ctx, u.Message)
+	}
+}
+
+// editMessageReply edits messageID to the first reply part and sends any
+// remaining parts as new messages. The keyboard is attached once, to the last
+// part. A "message is not modified" rejection is treated as success so pressing
+// the current view again cannot duplicate the message.
+func (b *Bot) editMessageReply(ctx context.Context, chatID, messageID int64, rep reply) error {
+	if len(rep.parts) == 0 {
+		return nil
+	}
+	markup := rep.keyboard
+	if len(rep.parts) > 1 {
+		markup = nil
+	}
+	if err := b.api.editMessageText(ctx, chatID, messageID, rep.parts[0], markup); err != nil {
+		if isNotModified(err) {
+			return nil
+		}
+		return err
+	}
+	if len(rep.parts) > 1 {
+		if err := b.sendParts(ctx, chatID, rep.parts[1:], rep.keyboard); err != nil {
+			// Part 0 is already applied; resending every part would duplicate
+			// it. Report the failure without asking the caller to resend.
+			b.log.Warn("telegram: send remaining parts failed", "error", err.Error())
+		}
+	}
+	return nil
+}
+
+// deliverMenuReply edits the menu bubble when its message is known and falls
+// back to a fresh message otherwise.
+func (b *Bot) deliverMenuReply(ctx context.Context, chatID, messageID int64, rep reply) {
+	if len(rep.parts) == 0 {
+		return
+	}
+	if messageID != 0 {
+		if err := b.editMessageReply(ctx, chatID, messageID, rep); err == nil {
+			return
+		} else {
+			b.log.Warn("telegram: menu edit failed", "error", err.Error())
+		}
+	}
+	if err := b.sendParts(ctx, chatID, rep.parts, rep.keyboard); err != nil {
+		b.log.Warn("telegram: menu reply failed", "error", err.Error())
 	}
 }
 

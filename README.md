@@ -171,9 +171,14 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 
 ## Bot 命令
 
+发送 `/start` 或 `/menu` 打开交互式菜单：账号、邮件、账单、资产、提醒、设置等
+操作都在同一条消息内通过按钮完成，按「返回 / 主页」即可在同一气泡中切换。
+斜杠命令保留为快捷方式。
+
 | 命令 | 说明 |
 |---|---|
-| `/start`、`/help` | 帮助 |
+| `/start`、`/menu` | 打开交互式菜单 |
+| `/help` | 菜单式帮助（「命令列表」按钮查看完整命令） |
 | `/add microsoft` / `/add qq` | 生成一次性接入链接 |
 | `/accounts` | 账号列表 |
 | `/remove <accountID>` | 停用账号（保留历史账单） |

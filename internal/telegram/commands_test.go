@@ -12,6 +12,13 @@ import (
 func TestHelpCommand(t *testing.T) {
 	env := newTestEnv(t)
 	text := sentText(env.runMessage("/help"))
+	if !strings.Contains(text, "Invoice Guard") {
+		t.Fatalf("help menu missing title: %q", text)
+	}
+	// The full command reference lives behind the Commands button so the first
+	// screen stays a menu.
+	env.runCallback(menuCallbackData(menuCommands, "", ""))
+	text = sentText(env.tg.callsFor("editMessageText"))
 	for _, want := range []string{"/add", "/accounts", "/remove", "/sync", "/latest", "/search", "/invoices", "/pending", "/paid", "/overdue", "/assets", "/providers", "/status", "/settings", "/settings folder &lt;accountID&gt;", "on|off"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("help missing %q", want)

@@ -13,7 +13,7 @@ import (
 func TestCommandWithBotSuffix(t *testing.T) {
 	env := newTestEnv(t)
 	text := sentText(env.runMessage("/help@InvoiceGuardBot"))
-	if !strings.Contains(text, "/settings") {
+	if !strings.Contains(text, "Invoice Guard") {
 		t.Fatalf("suffixed command was not handled: %q", text)
 	}
 }

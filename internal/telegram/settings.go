@@ -84,7 +84,7 @@ func (b *Bot) setReminderTime(ctx context.Context, args []string) (reply, error)
 		return reply{parts: []string{tr.t("settings.reminderUsage")}}, nil
 	}
 	value := strings.TrimSpace(args[0])
-	if _, err := time.Parse("15:04", value); err != nil {
+	if !validReminderTime(value) {
 		return reply{parts: []string{tr.t("settings.reminderInvalid")}}, nil
 	}
 	if err := b.store.SetSetting(ctx, settingReminderTime, value); err != nil {

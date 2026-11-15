@@ -20,11 +20,18 @@ func (b *Bot) handleCallback(ctx context.Context, cq *callbackQuery) {
 		b.log.Warn("telegram: rejected callback from unauthorized sender", "user_id", cq.From.ID)
 		return
 	}
+	// Any button press abandons a pending one-shot text prompt. A menu prompt
+	// re-registers itself in menuPrompt after this clear.
+	b.clearMenuInput(cq.Message.Chat.ID, cq.From.ID)
 	tr := b.tr(ctx)
 	action, id, ok := parseCallbackData(cq.Data)
 	if !ok {
 		if waction, wid, value, wok := parseWizardCallback(cq.Data); wok {
 			b.handleWizardCallback(ctx, cq, waction, wid, value)
+			return
+		}
+		if view, param, sub, mok := parseMenuCallback(cq.Data); mok {
+			b.handleMenuCallback(ctx, cq, view, param, sub)
 			return
 		}
 		b.answerCallback(ctx, cq.ID, tr.t("error.unknownAction"), false)
@@ -75,13 +82,22 @@ func (b *Bot) answerCallback(ctx context.Context, callbackID, text string, alert
 // a fresh message when the edit is rejected (for example an old message).
 func (b *Bot) editOrSend(ctx context.Context, cq *callbackQuery, text string, markup *inlineKeyboard) {
 	if cq.Message != nil {
-		if err := b.api.editMessageText(ctx, cq.Message.Chat.ID, cq.Message.MessageID, text, markup); err == nil {
+		if err := b.api.editMessageText(ctx, cq.Message.Chat.ID, cq.Message.MessageID, text, markup); err == nil || isNotModified(err) {
 			return
 		} else {
 			b.log.Warn("telegram: editMessageText failed", "error", err.Error())
 		}
 	}
 	b.sendText(ctx, b.cfg.Telegram.ChatID, text, markup)
+}
+
+// isNotModified reports Telegram's harmless "content is the same" rejection.
+func isNotModified(err error) bool {
+	var ae *apiError
+	if errors.As(err, &ae) {
+		return ae.Code == 400 && strings.Contains(strings.ToLower(ae.Description), "message is not modified")
+	}
+	return false
 }
 
 func (b *Bot) callbackPaidPrompt(ctx context.Context, cq *callbackQuery, invoiceID string) {

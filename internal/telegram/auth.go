@@ -33,6 +33,10 @@ const (
 	cbWizardCancel  = "wx"
 	cbWizardBack    = "wb"
 	cbWizardValue   = "wv"
+
+	// Menu callbacks use their own namespace so navigation never collides with
+	// invoice, mail or wizard actions. Data is mn:<view>[:<param>[:<sub>]].
+	cbMenu = "mn"
 )
 
 func callbackData(action, id string) string { return action + ":" + id }
@@ -83,6 +87,64 @@ func parseWizardCallback(data string) (action, id, value string, ok bool) {
 		return "", "", "", false
 	}
 	return parts[0], id, value, true
+}
+
+// menuCallbackData builds a menu callback. Empty trailing parts are omitted so
+// the common mn:<view> form stays short; a non-empty sub therefore requires a
+// non-empty param.
+func menuCallbackData(view, param, sub string) string {
+	data := cbMenu + ":" + view
+	if param != "" {
+		data += ":" + param
+	}
+	if sub != "" {
+		data += ":" + sub
+	}
+	return data
+}
+
+// parseMenuCallback parses the menu namespace. Every part is restricted to a
+// short ASCII token so callback_data stays within Telegram's 64-byte limit and
+// no user text can reach a callback.
+func parseMenuCallback(data string) (view, param, sub string, ok bool) {
+	if len(data) > 64 || !strings.HasPrefix(data, cbMenu+":") {
+		return "", "", "", false
+	}
+	parts := strings.Split(data, ":")
+	if len(parts) < 2 || len(parts) > 4 {
+		return "", "", "", false
+	}
+	view = parts[1]
+	if !validMenuToken(view, 20) {
+		return "", "", "", false
+	}
+	if len(parts) >= 3 {
+		param = parts[2]
+		if !validMenuToken(param, 40) {
+			return "", "", "", false
+		}
+	}
+	if len(parts) == 4 {
+		sub = parts[3]
+		if !validMenuToken(sub, 20) {
+			return "", "", "", false
+		}
+	}
+	return view, param, sub, true
+}
+
+func validMenuToken(s string, max int) bool {
+	if len(s) == 0 || len(s) > max {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // validID accepts the 32 lowercase hex identifiers used across the domain.

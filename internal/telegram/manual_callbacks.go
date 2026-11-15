@@ -147,16 +147,7 @@ func (b *Bot) editReply(ctx context.Context, cq *callbackQuery, rep reply) {
 		return
 	}
 	if cq.Message != nil {
-		markup := rep.keyboard
-		if len(rep.parts) > 1 {
-			markup = nil
-		}
-		if err := b.api.editMessageText(ctx, cq.Message.Chat.ID, cq.Message.MessageID, rep.parts[0], markup); err == nil {
-			if len(rep.parts) > 1 {
-				if err := b.sendParts(ctx, cq.Message.Chat.ID, rep.parts[1:], rep.keyboard); err != nil {
-					b.log.Warn("telegram: send remaining parts failed", "error", err.Error())
-				}
-			}
+		if err := b.editMessageReply(ctx, cq.Message.Chat.ID, cq.Message.MessageID, rep); err == nil {
 			return
 		} else {
 			b.log.Warn("telegram: editMessageText failed", "error", err.Error())

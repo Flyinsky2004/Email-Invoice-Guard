@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"email-invoice-guard/internal/core"
 )
@@ -309,7 +308,7 @@ func (b *Bot) manualPlanKeyboard(tr translator, plan core.ManualPlan, occurrence
 		}
 	}
 	rows = append(rows, []inlineButton{
-		{Text: tr.t("manual.historyButton"), CallbackData: callbackData(cbManualHistory, plan.ID)},
+		{Text: tr.t("manual.historyButton"), CallbackData: menuCallbackData(menuReminderHistory, plan.ID, "")},
 	})
 	return &inlineKeyboard{InlineKeyboard: rows}
 }
@@ -374,7 +373,17 @@ func supportedCurrencies() []string {
 	return []string{"USD", "EUR", "CNY", "HKD", "TWD", "GBP", "AUD", "CAD", "SGD", "JPY"}
 }
 
+// validReminderTime enforces a strict HH:MM shape; time.Parse alone accepts a
+// single-digit hour.
 func validReminderTime(raw string) bool {
-	_, err := time.Parse("15:04", strings.TrimSpace(raw))
-	return err == nil
+	raw = strings.TrimSpace(raw)
+	if len(raw) != 5 || raw[2] != ':' {
+		return false
+	}
+	hh, err := strconv.Atoi(raw[:2])
+	if err != nil || hh < 0 || hh > 23 {
+		return false
+	}
+	mm, err := strconv.Atoi(raw[3:])
+	return err == nil && mm >= 0 && mm <= 59
 }

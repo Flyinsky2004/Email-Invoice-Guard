@@ -268,7 +268,9 @@ func TestManualCommandsReportNotConfigured(t *testing.T) {
 func TestHelpIncludesManualCommandsWhenEnabled(t *testing.T) {
 	env := newTestEnv(t)
 	env.withManual(newFakeManual())
-	text := sentText(env.runMessage("/help"))
+	env.runMessage("/help")
+	env.runCallback(menuCallbackData(menuCommands, "", ""))
+	text := sentText(env.tg.callsFor("editMessageText"))
 	for _, want := range []string{"/reminder_add", "/reminders", "/reminder_pending", "/cancel"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("manual help missing %q: %q", want, text)
