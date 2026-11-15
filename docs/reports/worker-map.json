@@ -1,0 +1,74 @@
+[
+  {
+    "task": "T01",
+    "branch": "task/T01-microsoft-provider",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t01",
+    "terminal": "t9r",
+    "name": "eig-t01",
+    "launched_at": "2026-11-15T13:14:17.720987+00:00",
+    "spec": "docs/tasks/T01.md"
+  },
+  {
+    "task": "T02",
+    "branch": "task/T02-qq-imap-provider",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t02",
+    "terminal": "t9s",
+    "name": "eig-t02",
+    "launched_at": "2026-11-15T13:14:18.894076+00:00",
+    "spec": "docs/tasks/T02.md"
+  },
+  {
+    "task": "T03",
+    "branch": "task/T03-mail-pipeline",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t03",
+    "terminal": "t9t",
+    "name": "eig-t03",
+    "launched_at": "2026-11-15T13:14:20.184695+00:00",
+    "spec": "docs/tasks/T03.md"
+  },
+  {
+    "task": "T04",
+    "branch": "task/T04-invoice-parser",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t04",
+    "terminal": "t9v",
+    "name": "eig-t04",
+    "launched_at": "2026-11-15T13:14:21.739345+00:00",
+    "spec": "docs/tasks/T04.md"
+  },
+  {
+    "task": "T05",
+    "branch": "task/T05-invoice-lifecycle",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t05",
+    "terminal": "t9w",
+    "name": "eig-t05",
+    "launched_at": "2026-11-15T13:14:23.728948+00:00",
+    "spec": "docs/tasks/T05.md"
+  },
+  {
+    "task": "T06",
+    "branch": "task/T06-storage",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t06",
+    "terminal": "t9x",
+    "name": "eig-t06",
+    "launched_at": "2026-11-15T13:14:25.523272+00:00",
+    "spec": "docs/tasks/T06.md"
+  },
+  {
+    "task": "T07",
+    "branch": "task/T07-telegram",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t07",
+    "terminal": "t9y",
+    "name": "eig-t07",
+    "launched_at": "2026-11-15T13:14:28.221258+00:00",
+    "spec": "docs/tasks/T07.md"
+  },
+  {
+    "task": "T08",
+    "branch": "task/T08-app-deployment",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t08",
+    "terminal": "t9z",
+    "name": "eig-t08",
+    "launched_at": "2026-11-15T13:14:30.262062+00:00",
+    "spec": "docs/tasks/T08.md"
+  }
+]

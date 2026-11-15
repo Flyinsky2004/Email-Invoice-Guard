@@ -32,3 +32,7 @@ Dynamic settings keys: timezone, reminder_time, sync_interval_seconds. Scheduler
 ## Approved change CR001 (orchestrator, before integration)
 
 IMAPConfig.TrustedProxyCIDRs []string authorizes exact proxy network peers to assert X-Forwarded-Proto:https for QQ setup. Default empty means Request.TLS is mandatory. Parse RemoteAddr IP and verify CIDR membership; never trust forwarded headers from arbitrary peers. T08 loads TRUSTED_PROXY_CIDRS (comma-separated validated CIDRs), documents isolated Caddy network/subnet and direct HTTP rejection. T02 checks this field; configured PublicBaseURL HTTPS alone never proves transport security. No other public APIs changed.
+
+## Integration clarifications
+
+DeliveryPayload.Kind values are email, invoice, reminder (not worker-specific synonyms). A newly received email referencing an existing invoice is delivered once as invoice with persisted current status; it does not reset payment state. RecordParseFailure arguments are emailID, providerID, bounded reason. InvoiceFilter/AssetFilter Limit<=0 means all matching internal records (reminder and asset reconciliation must not silently cap100); positive limits are bounded for user command listings. EmailFilter remains bounded by default.

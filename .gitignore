@@ -9,3 +9,5 @@ coverage.out
 SPEC.md
 result.txt
 .DS_Store
+.omc/
+.claude/
