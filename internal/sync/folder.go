@@ -80,12 +80,11 @@ func (e *Engine) syncFolder(ctx context.Context, source core.MailSource, account
 		}
 
 		raw := batch.NextCursor
-		// A provider-signalled baseline change (Microsoft 410 rebuild) or a
-		// changed UIDVALIDITY starts a new baseline. The current page must be
-		// classified against the new baseline, and the new cursor is committed
-		// atomically with the page work rather than inheriting the old
-		// BaselineComplete flag.
-		baselineChanged := !raw.BaselineAt.IsZero() && !raw.BaselineAt.Equal(cursor.BaselineAt)
+		// IMAP cursors are authoritative through UIDVALIDITY; their
+		// BaselineAt may be a stale retained value, so only Microsoft-style
+		// cursors signal a baseline rebuild through BaselineAt.
+		imapCursor := cursor.UIDValidity != 0 || raw.UIDValidity != 0
+		baselineChanged := !imapCursor && !raw.BaselineAt.IsZero() && !raw.BaselineAt.Equal(cursor.BaselineAt)
 		uidChanged := cursor.UIDValidity != 0 && raw.UIDValidity != 0 && raw.UIDValidity != cursor.UIDValidity
 
 		next := raw
@@ -94,6 +93,11 @@ func (e *Engine) syncFolder(ctx context.Context, source core.MailSource, account
 
 		if baselineChanged || uidChanged {
 			newBaseline := raw.BaselineAt
+			if uidChanged && !baselineChanged {
+				// A UIDVALIDITY rebuild starts now; the provider may still
+				// carry the previous BaselineAt in its next cursor.
+				newBaseline = e.now().UTC()
+			}
 			if newBaseline.IsZero() {
 				newBaseline = e.now().UTC()
 			}
@@ -115,7 +119,7 @@ func (e *Engine) syncFolder(ctx context.Context, source core.MailSource, account
 			next = reset
 			next.BaselineComplete = raw.BaselineComplete || !batch.HasMore
 		} else {
-			if next.BaselineAt.IsZero() {
+			if next.BaselineAt.IsZero() || imapCursor {
 				next.BaselineAt = cursor.BaselineAt
 			}
 			if next.UIDValidity == 0 {

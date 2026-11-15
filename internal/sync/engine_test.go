@@ -861,3 +861,107 @@ func TestUIDValidityResetPersistsBaselineWhilePaging(t *testing.T) {
 		t.Fatalf("unexpected final cursor %+v", final)
 	}
 }
+
+func TestUIDValidityResetWithStaleBaselineAt(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	oldBaseline := testNow.Add(-24 * time.Hour)
+	if err := store.SaveCursor(context.Background(), core.SyncCursor{
+		AccountID:        "acc",
+		FolderID:         "inbox",
+		Value:            "old",
+		UIDValidity:      1,
+		LastUID:          10,
+		BaselineAt:       oldBaseline,
+		BaselineComplete: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	source := &fakeSource{typ: core.Microsoft, folders: []core.MailFolder{inboxFolder()}}
+	source.syncFn = func(ctx context.Context, account core.MailAccount, folder core.MailFolder, cursor core.SyncCursor) (core.SyncBatch, error) {
+		calls++
+		if calls == 1 {
+			// Real IMAP next cursors retain the previous BaselineAt even when
+			// UIDVALIDITY changed; it must not be used as the new baseline.
+			return core.SyncBatch{
+				Emails: []core.NormalizedEmail{testEmail("m-old", testNow.Add(-36*time.Hour), "old", "old body")},
+				NextCursor: core.SyncCursor{
+					BaselineAt:  oldBaseline,
+					UIDValidity: 2,
+					LastUID:     1,
+					Value:       "uid-1",
+				},
+				HasMore: true,
+			}, nil
+		}
+		if !cursor.BaselineAt.Equal(testNow) || cursor.UIDValidity != 2 || cursor.BaselineComplete {
+			t.Errorf("UID reset did not start a fresh baseline: %+v", cursor)
+		}
+		return core.SyncBatch{
+			NextCursor: core.SyncCursor{BaselineAt: oldBaseline, UIDValidity: 2, Value: "uid-2"},
+			HasMore:    false,
+		}, nil
+	}
+	engine := newTestEngine(t, store, source, &fakeParser{}, nil)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	email, _ := store.emailByProviderID("m-old")
+	if !email.SyncMetadata.Historical {
+		t.Fatalf("36h-old mail was not historical: %+v", email.SyncMetadata)
+	}
+	if _, delivered := store.deliveryForEmail(email.InternalEmailID); delivered {
+		t.Fatal("historical mail entered the outbox after a UIDVALIDITY reset")
+	}
+	final, ok := store.getCursor("acc", "inbox")
+	if !ok || !final.BaselineAt.Equal(testNow) || final.UIDValidity != 2 || !final.BaselineComplete {
+		t.Fatalf("unexpected final cursor %+v", final)
+	}
+}
+
+func TestUIDValidityResetRollbackKeepsOldCursor(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	oldBaseline := testNow.Add(-24 * time.Hour)
+	if err := store.SaveCursor(context.Background(), core.SyncCursor{
+		AccountID:        "acc",
+		FolderID:         "inbox",
+		Value:            "old",
+		UIDValidity:      1,
+		LastUID:          10,
+		BaselineAt:       oldBaseline,
+		BaselineComplete: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.failSaveCursor = true
+
+	source := &fakeSource{typ: core.Microsoft, folders: []core.MailFolder{inboxFolder()}}
+	source.syncFn = func(ctx context.Context, account core.MailAccount, folder core.MailFolder, cursor core.SyncCursor) (core.SyncBatch, error) {
+		return core.SyncBatch{
+			Emails: []core.NormalizedEmail{testEmail("m-old", testNow.Add(-36*time.Hour), "old", "old body")},
+			NextCursor: core.SyncCursor{
+				BaselineAt:  oldBaseline,
+				UIDValidity: 2,
+				LastUID:     1,
+				Value:       "uid-1",
+			},
+			HasMore: false,
+		}, nil
+	}
+	engine := newTestEngine(t, store, source, &fakeParser{}, nil)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err == nil {
+		t.Fatal("expected storage failure")
+	}
+	if store.emailCount() != 0 || store.deliveryCount() != 0 {
+		t.Fatalf("partial writes survived rollback: emails=%d deliveries=%d", store.emailCount(), store.deliveryCount())
+	}
+	cursor, ok := store.getCursor("acc", "inbox")
+	if !ok || cursor.UIDValidity != 1 || cursor.LastUID != 10 || !cursor.BaselineAt.Equal(oldBaseline) || !cursor.BaselineComplete {
+		t.Fatalf("old cursor not preserved after rollback: %+v", cursor)
+	}
+}
