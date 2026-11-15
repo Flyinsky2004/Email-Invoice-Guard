@@ -23,6 +23,8 @@ type MicrosoftConfig struct {
 	SessionTTL                                                              time.Duration
 }
 type IMAPConfig struct {
+	AllowedDomains []string // Explicit QQ-hosted aliases; authentication is still against verified QQ TLS.
+
 	TrustedProxyCIDRs []string // Only these remote peers may assert X-Forwarded-Proto: https.
 
 	Address, ServerName, PublicBaseURL string
