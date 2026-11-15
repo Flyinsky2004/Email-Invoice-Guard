@@ -10,13 +10,14 @@
 curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/download/install.sh | sudo bash
 ```
 
-安装器询问 Bot Token、信任用户 ID 和可选 HTTPS 地址。默认将通知发到第一个信任用户的私聊；先向 Bot 发送 `/start`。
+安装器询问 Bot Token、信任用户 ID、监听端口（默认 8080，被占用时会提示更换）和可选 HTTPS 地址。默认将通知发到第一个信任用户的私聊；先向 Bot 发送 `/start`。
 
 参数示例：
 
 ```bash
 curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/download/install.sh -o install.sh
 sudo bash install.sh --public-url https://invoice.example.com --chat-id -1001234567890
+sudo bash install.sh --port 9090
 sudo bash install.sh --version v1.0.0
 ```
 
@@ -45,7 +46,7 @@ sudo systemctl stop email-invoice-guard
 
 ## HTTPS 接入
 
-默认监听 `127.0.0.1:8080`。未提供公网地址时，先使用本机 HTTP 模式启动 Bot。QQ 授权码页面仍强制 HTTPS；添加邮箱前需配置真正的 HTTPS 源站。
+默认监听 `127.0.0.1:8080`（安装时可用 `--port` 或交互提示更换）。未提供公网地址时，先使用本机 HTTP 模式启动 Bot。QQ 授权码页面仍强制 HTTPS；添加邮箱前需配置真正的 HTTPS 源站。
 
 在已有 Caddy 中使用：
 

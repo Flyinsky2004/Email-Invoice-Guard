@@ -22,6 +22,7 @@
 | `IMAP_SERVER_NAME: only imap.qq.com is supported` | 改了 TLS 主机名 | 固定为 `imap.qq.com` |
 | `MICROSOFT_REDIRECT_URL: must share the PUBLIC_BASE_URL origin` | 回调与公网地址不同源 | 改为同域名同协议 |
 | `LISTEN_ADDRESS: must be host:port` | 监听地址格式错误 | 如 `:8080` 或 `127.0.0.1:8080` |
+| 安装时报端口被占用 | 默认 8080 已被其他程序监听 | 重新运行并用 `--port` 指定空闲端口 |
 
 ## 健康检查失败
 

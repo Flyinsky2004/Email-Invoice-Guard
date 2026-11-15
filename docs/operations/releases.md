@@ -26,7 +26,7 @@
 curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/download/install.sh | sudo bash
 ```
 
-标准输入是脚本时，交互问题从 `/dev/tty` 读取。安装器会隐藏询问 Bot Token、询问信任用户 ID，并可选询问公网 HTTPS 地址。默认 Chat ID 是第一个信任用户，请先在 Telegram 与机器人私聊发送 `/start`。群组通知使用 `--chat-id` 指定群组的负数 ID。
+标准输入是脚本时，交互问题从 `/dev/tty` 读取。安装器会隐藏询问 Bot Token、询问信任用户 ID、监听端口（默认 8080，被占用时会提示更换），并可选询问公网 HTTPS 地址。默认 Chat ID 是第一个信任用户，请先在 Telegram 与机器人私聊发送 `/start`。群组通知使用 `--chat-id` 指定群组的负数 ID。
 
 需要先查看脚本或传参数时：
 
@@ -36,7 +36,7 @@ sudo bash install.sh --public-url https://invoice.example.com --chat-id -1001234
 sudo bash install.sh --help
 ```
 
-自动化部署可用 `--non-interactive --bot-token-file /安全路径/bot-token --user-ids 123456789 --public-url https://invoice.example.com`。也可通过 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_ALLOWED_USER_IDS`、`TELEGRAM_CHAT_ID`、`PUBLIC_BASE_URL` 提供配置。交互或 Token 文件可避免 Token 出现在命令历史与进程参数中。
+自动化部署可用 `--non-interactive --bot-token-file /安全路径/bot-token --user-ids 123456789 --public-url https://invoice.example.com --port 8080`。也可通过 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_ALLOWED_USER_IDS`、`TELEGRAM_CHAT_ID`、`PUBLIC_BASE_URL` 提供配置。交互或 Token 文件可避免 Token 出现在命令历史与进程参数中。
 
 安装器默认自动安装 Debian/Ubuntu 依赖。其他 systemd Linux 系统可自行安装帮助中所列依赖，使用 `--skip-deps`。支持 amd64、arm64；目标机不需要 Go。
 

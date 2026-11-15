@@ -25,6 +25,7 @@ RECONFIGURE=0
 NO_START=0
 SKIP_DEPS=0
 TOKEN_FILE=
+OLD_LISTEN=
 LISTEN_SET=0
 ZONE_SET=0
 REMINDER_SET=0
@@ -47,7 +48,7 @@ usage() {
 用法：sudo bash install.sh [参数]
 
 默认从 Flyinsky2004/Email-Invoice-Guard 下载最新稳定 Release，校验 SHA-256，
-安装并启动 systemd 服务。首次安装会隐藏询问 Bot Token，并询问信任用户 ID。
+安装并启动 systemd 服务。首次安装会隐藏询问 Bot Token，并询问信任用户 ID 与监听端口。
 
   --version TAG           指定 Release tag，默认 latest（不选择预发布）
   --repo OWNER/REPO       GitHub 仓库
@@ -57,7 +58,8 @@ usage() {
   --user-ids IDS          逗号分隔的 Telegram 信任用户 ID
   --chat-id ID            目标会话，默认第一个信任用户 ID；支持负数群组 ID
   --public-url URL        公网 HTTPS 源站；未设置则询问，可留空使用本机模式
-  --listen HOST:PORT      默认 127.0.0.1:8080
+  --port PORT             本机监听端口，默认 8080；被占用时会提示更换
+  --listen HOST:PORT      完整监听地址，默认 127.0.0.1:8080
   --timezone ZONE         默认 Asia/Taipei
   --reminder-time HH:MM   默认 09:00
   --install-dir DIR      二进制目录
@@ -77,6 +79,14 @@ HELP
 log() { printf '%s\n' "$*" >&2; }
 die() { log "错误：$*"; exit 1; }
 need_value() { [[ $# -ge 2 && -n $2 ]] || die "参数 $1 缺少值"; }
+# True when something already listens on the port (ss is part of iproute2 on
+# Debian/Ubuntu). When ss is unavailable the check is skipped and the service
+# start plus journal tail below still surface a bind failure.
+port_in_use() {
+  local port=$1
+  command -v ss >/dev/null 2>&1 || return 1
+  [[ -n $(ss -H -ltn "sport = :$port" 2>/dev/null) ]]
+}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) need_value "$@"; VERSION=$2; shift 2 ;;
@@ -87,6 +97,7 @@ while [[ $# -gt 0 ]]; do
     --user-ids) need_value "$@"; USER_IDS=$2; RECONFIGURE=1; shift 2 ;;
     --chat-id) need_value "$@"; CHAT_ID=$2; RECONFIGURE=1; shift 2 ;;
     --public-url) need_value "$@"; PUBLIC_URL=$2; RECONFIGURE=1; shift 2 ;;
+    --port) need_value "$@"; LISTEN=127.0.0.1:$2; LISTEN_SET=1; RECONFIGURE=1; shift 2 ;;
     --listen) need_value "$@"; LISTEN=$2; LISTEN_SET=1; RECONFIGURE=1; shift 2 ;;
     --timezone) need_value "$@"; ZONE=$2; ZONE_SET=1; RECONFIGURE=1; shift 2 ;;
     --reminder-time) need_value "$@"; REMINDER=$2; REMINDER_SET=1; RECONFIGURE=1; shift 2 ;;
@@ -144,6 +155,7 @@ env_value() {
 }
 [[ ! -f $ENV_FILE ]] || OLD_ENV=1
 if [[ $OLD_ENV == 1 ]]; then
+  OLD_LISTEN=$(env_value LISTEN_ADDRESS)
   [[ -n $BOT_TOKEN ]] || BOT_TOKEN=$(env_value TELEGRAM_BOT_TOKEN)
   [[ -n $USER_IDS ]] || USER_IDS=$(env_value TELEGRAM_ALLOWED_USER_IDS)
   [[ -n $CHAT_ID ]] || CHAT_ID=$(env_value TELEGRAM_CHAT_ID)
@@ -178,10 +190,30 @@ prompt() {
   if [[ $secret == 1 ]]; then IFS= read -r -s value <&3; printf '\n' >&3; else IFS= read -r value <&3; fi
   printf -v "$name" '%s' "$value"
 }
+# Ask for the local port only; the bind host stays 127.0.0.1 unless --listen
+# was given. An empty answer keeps the current default (or the port already
+# configured during an upgrade).
+prompt_listen_port() {
+  local host=${LISTEN%:*} input i
+  [[ $host == "$LISTEN" ]] && host=127.0.0.1
+  for ((i=0;i<3;i++)); do
+    printf '监听端口（默认 %s，需未被占用）：' "${LISTEN##*:}" >&3
+    IFS= read -r input <&3 || return 0
+    input=${input//[[:space:]]/}
+    [[ -n $input ]] || return 0
+    if [[ $input =~ ^[0-9]{1,5}$ ]] && (( 10#$input > 0 && 10#$input <= 65535 )); then
+      LISTEN=$host:$input
+      return 0
+    fi
+    log '端口必须是 1-65535 的整数。'
+  done
+  die '监听端口输入无效'
+}
 if [[ $OLD_ENV == 0 || $RECONFIGURE == 1 ]]; then
   [[ -n $BOT_TOKEN ]] || prompt BOT_TOKEN 'Telegram Bot Token（隐藏输入）：' 1
   [[ -n $USER_IDS ]] || prompt USER_IDS '信任用户 ID（多个用逗号分隔）：'
   if [[ -z $PUBLIC_URL && $CAN_PROMPT == 1 ]]; then prompt PUBLIC_URL '公网 HTTPS 地址（留空先使用本机模式）：'; fi
+  if [[ $LISTEN_SET == 0 && $CAN_PROMPT == 1 ]]; then prompt_listen_port; fi
 fi
 [[ $BOT_TOKEN =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || die 'Bot Token 格式错误'
 [[ $USER_IDS != *$'\n'* && $USER_IDS != *$'\r'* ]] || die '用户 ID 必须在同一行'
@@ -196,8 +228,29 @@ IFS=',' read -r -a trusted_ids <<< "$USER_IDS"
 for id in "${trusted_ids[@]}"; do valid_id "$id" || die '用户 ID 超出 int64 范围'; done
 CHAT_ID=${CHAT_ID:-${trusted_ids[0]}}
 [[ $CHAT_ID =~ ^-?[1-9][0-9]*$ ]] && valid_id "$CHAT_ID" || die 'Chat ID 格式错误'
-[[ $LISTEN =~ ^([A-Za-z0-9._-]*|\[[0-9A-Fa-f:]+\]):[0-9]{1,5}$ ]] || die '--listen 必须是 HOST:PORT'
+[[ $LISTEN =~ ^([A-Za-z0-9._-]*|\[[0-9A-Fa-f:]+\]):[0-9]{1,5}$ ]] || die '监听地址必须是 HOST:PORT（--listen 或 --port）'
 port=${LISTEN##*:}; (( 10#$port > 0 && 10#$port <= 65535 )) || die '监听端口范围错误'
+# Refuse an occupied port before touching the system. During an upgrade the old
+# service may still own the port; it is stopped later, so that case is allowed.
+own_port=0
+if [[ $OLD_ENV == 1 ]] && systemctl is-active --quiet "$SERVICE.service" 2>/dev/null; then
+  prior_port=${OLD_LISTEN##*:}
+  [[ -n $OLD_LISTEN ]] || prior_port=8080
+  if [[ $prior_port == "$port" ]]; then own_port=1; fi
+fi
+if [[ $NO_START == 0 && $own_port == 0 ]] && port_in_use "$port"; then
+  if [[ $CAN_PROMPT == 1 && $NON_INTERACTIVE == 0 ]]; then
+    for ((i=0;i<3;i++)); do
+      log "端口 $port 已被其他程序占用，请换一个端口。"
+      prompt_listen_port
+      port=${LISTEN##*:}
+      if ! port_in_use "$port"; then break; fi
+    done
+    if port_in_use "$port"; then die "端口 $port 已被其他程序占用，请用 --port 指定空闲端口"; fi
+  else
+    die "端口 $port 已被其他程序占用，请用 --port 指定空闲端口"
+  fi
+fi
 PUBLIC_URL=${PUBLIC_URL%/}
 PUBLIC_URL=${PUBLIC_URL:-http://127.0.0.1:$port}
 ALLOW_HTTP=false
@@ -218,7 +271,7 @@ if [[ $SKIP_DEPS == 0 ]]; then
   command -v apt-get >/dev/null || die '自动安装依赖支持 Debian/Ubuntu；其他系统先安装依赖，再加 --skip-deps'
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq ca-certificates curl tar coreutils openssl jq tzdata passwd
+  apt-get install -y -qq ca-certificates curl tar coreutils openssl jq tzdata passwd iproute2
 fi
 for tool in curl tar sha256sum openssl jq getent useradd groupadd install systemctl runuser; do
   command -v "$tool" >/dev/null || die "缺少依赖：$tool"
@@ -289,8 +342,8 @@ if [[ -f $UNIT ]]; then
 fi
 if [[ -f $BIN ]]; then OLD_BINARY=1; cp -p -- "$BIN" "$TMP_DIR/old-binary"; fi
 if [[ $OLD_ENV == 1 ]]; then cp -p -- "$ENV_FILE" "$TMP_DIR/old-env"; fi
-if systemctl is-active --quiet "$SERVICE.service"; then WAS_ACTIVE=1; fi
-if systemctl is-enabled --quiet "$SERVICE.service"; then WAS_ENABLED=1; fi
+if systemctl is-active --quiet "$SERVICE.service" 2>/dev/null; then WAS_ACTIVE=1; fi
+if systemctl is-enabled --quiet "$SERVICE.service" 2>/dev/null; then WAS_ENABLED=1; fi
 if ! getent group "$RUN_USER" >/dev/null; then groupadd --system "$RUN_USER"; fi
 if ! id "$RUN_USER" >/dev/null 2>&1; then useradd --system --gid "$RUN_USER" --home-dir "$DATA_DIR" --no-create-home --shell /usr/sbin/nologin "$RUN_USER"; fi
 [[ $(id -u "$RUN_USER") != 0 ]] || die '拒绝使用 UID 0 的服务用户'
@@ -353,7 +406,11 @@ ReadWritePaths=$DATA_DIR
 WantedBy=multi-user.target
 UNIT
 CHANGED=1
-if [[ $WAS_ACTIVE == 1 && $NO_START == 0 ]]; then systemctl stop "$SERVICE.service"; fi
+if [[ $WAS_ACTIVE == 1 && $NO_START == 0 ]]; then
+  systemctl stop "$SERVICE.service"
+  # Wait for the old process to release the port before the new one binds it.
+  for ((i=0;i<10;i++)); do port_in_use "$port" || break; sleep 0.5; done
+fi
 next_binary=$(mktemp "$INSTALL_DIR/.binary.XXXXXXXX")
 install -m 0755 "$TMP_DIR/binary" "$next_binary"
 mv -f -- "$next_binary" "$BIN"
@@ -365,16 +422,30 @@ fi
 install -m 0644 "$TMP_DIR/new-unit" "$UNIT"
 systemctl daemon-reload
 if [[ $NO_START == 0 ]]; then
-  systemctl start "$SERVICE.service"
+  if port_in_use "$port"; then die "端口 $port 已被其他程序占用，请重新运行并用 --port 指定空闲端口（原文件将恢复）"; fi
+  if ! systemctl start "$SERVICE.service"; then
+    log '服务启动命令失败，最近日志：'
+    journalctl -u "$SERVICE.service" -n 30 --no-pager 2>/dev/null | sed 's/^/  /' >&2 || true
+    die '服务未启动；原文件将恢复'
+  fi
   healthy=0
   for ((i=0;i<20;i++)); do
-    if systemctl is-active --quiet "$SERVICE.service" && env LISTEN_ADDRESS="$LISTEN" HEALTH_PATH="$HEALTH_PATH" "$BIN" --healthcheck >/dev/null 2>&1; then sleep 1; if systemctl is-active --quiet "$SERVICE.service"; then healthy=1; break; fi; fi
+    if systemctl is-active --quiet "$SERVICE.service" && env LISTEN_ADDRESS="$LISTEN" HEALTH_PATH="$HEALTH_PATH" "$BIN" --healthcheck >/dev/null 2>&1; then
+      sleep 1
+      if systemctl is-active --quiet "$SERVICE.service"; then healthy=1; break; fi
+    elif systemctl is-failed --quiet "$SERVICE.service" 2>/dev/null; then
+      break
+    fi
     sleep 1
   done
-  [[ $healthy == 1 ]] || die '服务未启动；可查看 journalctl 日志（原文件将恢复）'
+  if [[ $healthy != 1 ]]; then
+    log '服务未能通过健康检查，最近日志：'
+    journalctl -u "$SERVICE.service" -n 30 --no-pager 2>/dev/null | sed 's/^/  /' >&2 || true
+    die '服务未启动；原文件将恢复'
+  fi
   systemctl enable "$SERVICE.service" >/dev/null
 fi
 CHANGED=0
-log "已安装 $TAG ($ARCH)。配置：$ENV_FILE；数据：$DATA_DIR"
+log "已安装 $TAG ($ARCH)。监听：$LISTEN；配置：$ENV_FILE；数据：$DATA_DIR"
 log "管理：systemctl status $SERVICE；日志：journalctl -u $SERVICE -f"
 if [[ $ALLOW_HTTP == true && ( $OLD_ENV == 0 || $RECONFIGURE == 1 ) ]]; then log '当前为本机模式；添加邮箱前请配置公网 HTTPS 源站与反向代理。'; fi

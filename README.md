@@ -46,7 +46,7 @@ Microsoft Graph / QQ IMAP
 curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/download/install.sh | sudo bash
 ```
 
-安装时隐藏询问 **Bot Token**，询问 **信任用户 ID**（逗号分隔），并可选填写公网 HTTPS 地址。默认 Chat ID 是第一个信任用户；先与机器人私聊发送 `/start`。
+安装时隐藏询问 **Bot Token**，询问 **信任用户 ID**（逗号分隔）、**监听端口**（默认 8080，被占用时会提示更换），并可选填写公网 HTTPS 地址。默认 Chat ID 是第一个信任用户；先与机器人私聊发送 `/start`。
 
 支持参数：
 
