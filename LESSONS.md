@@ -267,3 +267,10 @@
 - 修复 commit：本次脚本交付调整（`scripts/update.sh` 入库，文档改用 raw.githubusercontent.com 的 main 地址，Release 只上传二进制与校验和）。
 - Done right: 脚本从仓库 `main` 获取；`update.sh` 负责取最新 `install.sh` 并执行升级；Release 工作流只发布二进制、`SHA256SUMS` 与压缩包，脚本修复无需发版。
 - Seen 1× (2026-11-15).
+
+**CreateOccurrence 的 CAS 要求 occ.DueDate 等于已存 next_due_date；追赶跳跃必须先持久化 next_due_date 再创建当期 occurrence。**
+- T11 初版 catch-up 分支直接为 target 调用 CreateOccurrence，仓储因 next_due_date 仍是旧值返回 false，当期 occurrence 静默丢失；TestCatchUpBeyondWindowJumpsForwardToToday 首次运行失败。
+- 修复 commit：本次 T11 实现提交（SHA 见 result.txt）。
+- Done right: persistJump 先 UpdatePlan 写入 target 并记 PLAN_UPDATED，再对 target 调用 CreateOccurrence；两步之间崩溃也安全，下一 tick 会补建。
+- Seen 1× (2026-11-15).
+
