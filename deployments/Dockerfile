@@ -4,7 +4,7 @@
 # CGO is disabled because the SQLite driver (modernc.org/sqlite) is pure Go.
 #
 # Base images are pinned to supported releases:
-#   - golang:1.27.3-alpine3.24  (Go 1.27.3 on Alpine 3.24)
+#   - golang:1.27.4-alpine3.24  (Go 1.27.4 on Alpine 3.24)
 #   - alpine:3.24.4             (supported Alpine 3.24 line; 3.21 is EOL)
 #   - caddy:2.11.9-alpine       (see deployments/docker-compose.yml)
 # Sources: https://www.alpinelinux.org/releases/ and
@@ -13,7 +13,7 @@
 # Build (from the repository root):
 #   docker build -f deployments/Dockerfile -t email-invoice-guard:latest .
 
-FROM golang:1.27.3-alpine3.24 AS build
+FROM golang:1.27.4-alpine3.24 AS build
 WORKDIR /src
 ENV CGO_ENABLED=0 GOOS=linux
 COPY go.mod go.sum ./

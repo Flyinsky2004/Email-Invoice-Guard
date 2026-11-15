@@ -153,4 +153,8 @@ curl -fsS https://invoice.example.com/healthz
 
 健康响应只包含 `{"status":"ok"}` 或 `{"status":"unavailable"}`，不泄露任何内部信息。
 
-生产镜像固定为 Go 1.27.3 / Alpine 3.24.4 / Caddy 2.11.9。Docker 构建阶段会在目标 Linux 平台运行不依赖真实凭证的完整测试。密钥文件模式需要将对应文件只读挂载到容器内，并由 uid 10001 读取；默认 Compose 使用环境变量密钥。
+生产镜像固定为 Go 1.27.4 / Alpine 3.24.4 / Caddy 2.11.9。Docker 构建阶段会在目标 Linux 平台运行不依赖真实凭证的完整测试。密钥文件模式需要将对应文件只读挂载到容器内，并由 uid 10001 读取；默认 Compose 使用环境变量密钥。
+
+Caddy 2.11.9 从固定版本源码使用 Go 1.27.4 重新编译，避免官方同版本镜像内旧 Go 工具链的标准库漏洞。Compose 会同时构建 app 与 caddy；不把邮箱、Bot 或加密密钥环境变量传给反向代理。
+
+安全补丁依据：[GO-2026-6859](https://pkg.go.dev/vuln/GO-2026-6859)、[Go 1.27.4 发布记录](https://go.dev/doc/devel/release#go1.27.4)。宿主机 Go 较旧且启用自动工具链时，会按 go.mod 下载项目所需 SDK；不修改系统安装。

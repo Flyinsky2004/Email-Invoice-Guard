@@ -54,7 +54,7 @@ docker compose -f deployments/docker-compose.yml ps
 
 ## 本地开发
 
-前置：Go 1.27+、`git`、可选 `docker`。
+前置：Go 1.27.4+、`git`、可选 `docker`。
 
 ```bash
 umask 077

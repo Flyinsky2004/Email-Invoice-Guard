@@ -38,7 +38,10 @@ services:
 
   caddy:
     # Pinned to the current supported release (v2.11.9, 2026-11-05).
-    image: caddy:2.11.9-alpine
+    build:
+      context: ..
+      dockerfile: deployments/Caddy.Dockerfile
+    image: email-invoice-guard-caddy:2.11.9-go1.27.4
     restart: unless-stopped
     depends_on:
       app:

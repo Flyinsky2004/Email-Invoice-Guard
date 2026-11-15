@@ -237,3 +237,9 @@
 - 修复 commit：本次 T08 阶段B 提交。
 - Done right: 测试在 Tick 后把 PENDING/FAILED/UNKNOWN 的 available_at 改为 now-1s（固定宽度 UTC 布局 `2006-01-02T15:04:05.000000000Z`）再 DeliverOnce，真实 claim/deliver/fail/retry 路径不变。
 - Seen 1× (2026-11-15).
+
+**最终安全检查要覆盖 Go 工具链及反向代理的实际编译版本。**
+- d40613c 后 govulncheck 发现 GO-2026-6859（net/http、Go 1.27.3）；实际 caddy:2.11.9-alpine build-info 也显示 Go 1.27.3，固定应用依赖不足以覆盖 SDK 漏洞。
+- 修复 commit：待本次安全补丁提交；go.mod 最低版本与两个镜像编译器统一 Go 1.27.4，固定 Caddy 2.11.9 源码重新编译。
+- Done right: 保存修复前扫描记录，以修复版本重跑测试、构建、govulncheck 和容器验证，并核对二进制 build-info。
+- Seen 1× (2026-11-15).
