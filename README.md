@@ -38,23 +38,32 @@ Microsoft Graph / QQ IMAP
 
 详细契约见 `docs/architecture.md`、`docs/contracts.md`、`docs/database-schema.md`。
 
-## 快速开始（Docker Compose）
+## 一键安装（Linux / systemd）
+
+先将代码推送到 [GitHub 仓库](https://github.com/Flyinsky2004/Email-Invoice-Guard)，发布一个 Release，并等待 Actions 构建完成。然后在 VPS 执行：
 
 ```bash
-umask 077
-cp .env.example .env
-# 编辑 .env：PUBLIC_BASE_URL、DOMAIN、TELEGRAM_*、ENCRYPTION_KEY
-openssl rand -base64 32     # 生成 ENCRYPTION_KEY
-
-docker compose -f deployments/docker-compose.yml up -d --build
-docker compose -f deployments/docker-compose.yml ps
+curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/download/install.sh | sudo bash
 ```
 
-部署结构：Caddy 负责 80/443 与自动 TLS，应用只在私有网络 `10.89.0.0/24` 上监听 8080，不对外发布端口。完整步骤见 [docs/operations/deployment.md](docs/operations/deployment.md)。
+安装时隐藏询问 **Bot Token**，询问 **信任用户 ID**（逗号分隔），并可选填写公网 HTTPS 地址。默认 Chat ID 是第一个信任用户；先与机器人私聊发送 `/start`。
+
+支持参数：
+
+```bash
+curl -fsSL https://github.com/Flyinsky2004/Email-Invoice-Guard/releases/latest/download/install.sh -o install.sh
+sudo bash install.sh --public-url https://invoice.example.com --chat-id -1001234567890
+sudo bash install.sh --version v1.0.0
+bash install.sh --help
+```
+
+默认下载最新稳定 Release，自动识别 amd64 / arm64、校验 SHA-256、安装 systemd 服务并设置开机启动。再次执行即升级，保留配置、SQLite 数据和原加密密钥。VPS 不需要 Go 或容器运行环境。
+
+完整安装与 HTTPS 配置见 [部署指南](docs/operations/deployment.md)，发布流程与全部参数见 [Release 指南](docs/operations/releases.md)。
 
 ## 本地开发
 
-前置：Go 1.27.4+、`git`、可选 `docker`。
+前置：Go 1.27.4+、`git`。
 
 ```bash
 umask 077
@@ -68,7 +77,7 @@ cp .env.example .env
 set -a
 . ./.env
 set +a
-# 本地开发时覆盖容器内数据路径：
+# 本地开发使用可写数据目录：
 export DATABASE_PATH=./data/invoice-guard.db
 go run ./cmd/server
 ```
@@ -103,7 +112,7 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DATABASE_PATH` | `./data/invoice-guard.db` | SQLite 路径（容器内为 `/data/...`） |
+| `DATABASE_PATH` | `./data/invoice-guard.db` | SQLite 路径（安装器设为 `/var/lib/email-invoice-guard/...`） |
 | `LISTEN_ADDRESS` | `:8080` | 监听地址 |
 | `HEALTH_PATH` | `/healthz` | 健康检查路径 |
 | `TIMEZONE` | `Asia/Taipei` | 提醒使用的 IANA 时区 |
@@ -196,6 +205,10 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 - 不自动下载邮件附件；不执行邮件内容中的任何指令。
 - 商家识别不等于账单真实性，用户需自行核对。
 
+## Release 自动构建
+
+发布 Release（`release.published`）后，GitHub Actions 先执行测试，再构建 Linux amd64/arm64 二进制，上传压缩包、`SHA256SUMS` 与 `install.sh`。不使用 Docker。
+
 ## 项目结构
 
 ```text
@@ -210,7 +223,7 @@ internal/reminder/         每日本地日历提醒
 internal/assets/           资产关联
 internal/storage/          SQLite 仓储与迁移
 internal/telegram/         长轮询与消息投递
-deployments/               Dockerfile、Compose、Caddyfile
+deployments/               systemd 单元与原生 Caddy 参考配置
 docs/setup/                账号接入文档
 docs/operations/           部署、备份、排障
 tests/e2e/                 端到端测试

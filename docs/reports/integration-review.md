@@ -21,3 +21,7 @@ Real SQLite tests exercise atomic page rollback (email/invoice/asset/outbox/curs
 Merchant URL trust now belongs to registered parser policies through optional core.InvoiceURLValidator. Telegram has no production vendor mapping; it checks generic HTTPS hygiene and delegates trust. Future parsers can enable safe payment links without Telegram edits.
 
 Live Microsoft/QQ/Telegram credentials have not been used. Mock API/TLS and container verification are distinguished from external live acceptance in final-report.md.
+
+## 最新交付方式变更
+
+用户最终改为原生 systemd + GitHub Release，停止本地构建验证，移除了 Docker 发布文件。早期 Docker/工具链检查属于历史记录；最新安装与发布过程见 operations/releases.md 与 final-report.md。所有 Worker 与已合并 Worktree/分支已清理。

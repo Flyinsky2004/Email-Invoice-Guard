@@ -26,10 +26,10 @@
 ## 健康检查失败
 
 ```bash
-docker compose -f deployments/docker-compose.yml exec app /app/server --healthcheck
+/usr/local/lib/email-invoice-guard/email-invoice-guard --healthcheck
 ```
 
-- 退出码非 0：容器内探测失败。检查 `LISTEN_ADDRESS`、`HEALTH_PATH`，或显式设置 `HEALTHCHECK_URL`。
+- 退出码非 0：本机探测失败。自定义端口或路径时，向命令提供 `LISTEN_ADDRESS`、`HEALTH_PATH`，或显式设置 `HEALTHCHECK_URL`。
 - 返回 `{"status":"unavailable"}`：数据库不可用。查看应用日志中的 `error` 字段。
 - 健康响应**不会**包含数据库路径、错误详情或任何密钥。
 
@@ -38,7 +38,7 @@ docker compose -f deployments/docker-compose.yml exec app /app/server --healthch
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `database is locked` | 并发写或外部进程占用 | 确认只有一个实例；SQLite 已启用 `busy_timeout=5000` |
-| `unable to open database file` | `/data` 权限或只读挂载 | 属主须为 `10001:10001`，卷可写 |
+| `unable to open database file` | 数据目录权限或文件系统只读 | 默认 `/var/lib/email-invoice-guard`，服务用户 `email-invoice-guard` 须可写 |
 | 磁盘写满 | WAL 增长 | 清理空间；WAL 会在检查点后回收 |
 | 恢复后完整性异常 | 备份不一致 | 用上一代备份重新恢复，见 `backup-restore.md` |
 
@@ -73,7 +73,7 @@ docker compose -f deployments/docker-compose.yml exec app /app/server --healthch
 ## 提醒与时间
 
 - 提醒按 `TIMEZONE` 的**本地日历日**计算，默认 `Asia/Taipei`，默认时间 `09:00`。
-- 容器缺少 `tzdata` 会导致时区加载失败；官方镜像已包含。
+- 缺少 `tzdata` 会导致时区加载失败；安装器会安装，手动部署需自行安装。
 - 账单创建当天不提醒；`REVIEW_REQUIRED` 不提醒；同一账单同一天只提醒一次。
 
 ## 日志
@@ -83,5 +83,5 @@ docker compose -f deployments/docker-compose.yml exec app /app/server --healthch
 - 排查时优先查看 `error`、`account_id`、`outbox_id` 等字段，不要要求用户提供密钥。
 
 ```bash
-docker compose -f deployments/docker-compose.yml logs -f --tail=200 app
+sudo journalctl -u email-invoice-guard -f -n 200
 ```

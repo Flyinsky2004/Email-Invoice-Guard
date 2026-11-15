@@ -1,0 +1,16 @@
+Release/systemd delivery static checks (2026-11-15)
+
+PASS bash -n scripts/install.sh
+PASS YAML parse: .github/workflows/release.yml
+PASS release trigger: published
+PASS every external Action pinned to a full 40-character commit SHA
+PASS bash -n for every workflow run block
+PASS gofmt -l cmd/server (no output)
+PASS git diff --check
+PASS only main remains in git branch --list
+PASS only main working tree remains in git worktree list
+PASS hc ls --json contains none of the eight eig-t01..eig-t08 workers
+
+No new Go build/test, Docker command, installer execution, Actions run,
+remote push, tag creation or Release publication was performed for this change.
+Earlier logs in this directory describe their own historical source checkpoint.

@@ -1,0 +1,20 @@
+$ command -v go git python3 node
+/opt/homebrew/bin/go
+/usr/bin/git
+/Users/flyinsky/.pyenv/shims/python3
+/Users/flyinsky/.nvm/versions/node/v26.12.1/bin/node
+exit code: 0
+
+$ go version
+go version go1.27.3 darwin/arm64
+exit code: 0
+
+$ node --version
+v26.12.1
+exit code: 0
+
+$ python3 --version
+Python 3.14.5
+exit code: 0
+
+# note: all four tools resolved; node is available (v26.12.1)

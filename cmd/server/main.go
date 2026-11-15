@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -16,7 +17,12 @@ func main() {
 	healthcheck := flag.Bool("healthcheck", false, "probe the local health endpoint and exit")
 	backup := flag.String("backup", "", "write a consistent SQLite snapshot to a new file and exit")
 	checkDB := flag.Bool("check-db", false, "check SQLite integrity, foreign keys and credential decryption and exit")
+	showVersion := flag.Bool("version", false, "print release version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("Email-Invoice-Guard %s commit=%s built=%s\n", version, commit, buildTime)
+		return
+	}
 
 	if *healthcheck {
 		os.Exit(runHealthcheck(os.Getenv, nil, os.Stderr))

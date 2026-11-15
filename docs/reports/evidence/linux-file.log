@@ -1,0 +1,2 @@
+bin/server-linux-amd64: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, Go BuildID=5pwFksj5nFbVwx-AJkMp/1KkB-YkKizWC2xnNHHVs/3weF7nR_J9snHW9tJriF/SQXgb58wPcGhXNzXoRrw, BuildID[sha1]=36f40e55389cdb686712dd6ede00aa51844beedf, with debug_info, not stripped
+bin/server-linux-arm64: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, Go BuildID=yvaMW4VCGio8Yi59N2tI/lJ6lGXmJVhefJqfkkMYL/dsZJoup37pirDQDfM0NH/rrhB3AhoNc41z9I4ljxY, BuildID[sha1]=4b41e6964ac94da3bd8f3d98d071c297493e83d8, with debug_info, not stripped

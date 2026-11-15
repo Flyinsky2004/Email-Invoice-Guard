@@ -36,6 +36,6 @@ Security: AES-256-GCM credentials and secure-session payloads, external key, sta
 
 ## Risks and required external validation
 
-Live Microsoft app registration, QQ IMAP authorization and Telegram bot/chat credentials are external dependencies. Automated tests use HTTP/IMAP mocks without secrets. Docker CLI exists but daemon was not running at initial audit. IMAP library is v2 beta; pinned and exercised with a fake server. Dependency versions verified using Go proxy metadata on 2026-11-15; all selected versions are locked in go.mod/go.sum.
+Live Microsoft app registration, QQ IMAP authorization and Telegram bot/chat credentials are external dependencies. Automated tests use HTTP/IMAP mocks without secrets. Deployment uses native Linux binaries from GitHub Releases with systemd; the installer preserves configuration, database and encryption keys on upgrades. IMAP library is v2 beta; pinned and exercised with a fake server. Dependency versions verified using Go proxy metadata on 2026-11-15; all selected versions are locked in go.mod/go.sum.
 
 Sources: [Graph immutable IDs](https://learn.microsoft.com/en-us/graph/outlook-immutable-id), [folder delta](https://learn.microsoft.com/en-us/graph/delta-query-messages), [OAuth code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow), [Telegram Bot API](https://core.telegram.org/bots/api), [SQLite driver](https://pkg.go.dev/modernc.org/sqlite), [IMAP library](https://pkg.go.dev/github.com/emersion/go-imap/v2/imapclient).

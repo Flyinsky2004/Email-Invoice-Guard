@@ -6,7 +6,11 @@
     "terminal": "t9r",
     "name": "eig-t01",
     "launched_at": "2026-11-15T13:14:17.720987+00:00",
-    "spec": "docs/tasks/T01.md"
+    "spec": "docs/tasks/T01.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   },
   {
     "task": "T02",
@@ -15,7 +19,11 @@
     "terminal": "t9s",
     "name": "eig-t02",
     "launched_at": "2026-11-15T13:14:18.894076+00:00",
-    "spec": "docs/tasks/T02.md"
+    "spec": "docs/tasks/T02.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   },
   {
     "task": "T03",
@@ -24,7 +32,11 @@
     "terminal": "t9t",
     "name": "eig-t03",
     "launched_at": "2026-11-15T13:14:20.184695+00:00",
-    "spec": "docs/tasks/T03.md"
+    "spec": "docs/tasks/T03.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   },
   {
     "task": "T04",
@@ -33,7 +45,11 @@
     "terminal": "t9v",
     "name": "eig-t04",
     "launched_at": "2026-11-15T13:14:21.739345+00:00",
-    "spec": "docs/tasks/T04.md"
+    "spec": "docs/tasks/T04.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   },
   {
     "task": "T05",
@@ -42,7 +58,11 @@
     "terminal": "t9w",
     "name": "eig-t05",
     "launched_at": "2026-11-15T13:14:23.728948+00:00",
-    "spec": "docs/tasks/T05.md"
+    "spec": "docs/tasks/T05.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   },
   {
     "task": "T06",
@@ -51,7 +71,11 @@
     "terminal": "t9x",
     "name": "eig-t06",
     "launched_at": "2026-11-15T13:14:25.523272+00:00",
-    "spec": "docs/tasks/T06.md"
+    "spec": "docs/tasks/T06.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   },
   {
     "task": "T07",
@@ -60,7 +84,11 @@
     "terminal": "t9y",
     "name": "eig-t07",
     "launched_at": "2026-11-15T13:14:28.221258+00:00",
-    "spec": "docs/tasks/T07.md"
+    "spec": "docs/tasks/T07.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   },
   {
     "task": "T08",
@@ -69,6 +97,10 @@
     "terminal": "t9z",
     "name": "eig-t08",
     "launched_at": "2026-11-15T13:14:30.262062+00:00",
-    "spec": "docs/tasks/T08.md"
+    "spec": "docs/tasks/T08.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   }
 ]

@@ -240,6 +240,18 @@
 
 **最终安全检查要覆盖 Go 工具链及反向代理的实际编译版本。**
 - d40613c 后 govulncheck 发现 GO-2026-6859（net/http、Go 1.27.3）；实际 caddy:2.11.9-alpine build-info 也显示 Go 1.27.3，固定应用依赖不足以覆盖 SDK 漏洞。
-- 修复 commit：待本次安全补丁提交；go.mod 最低版本与两个镜像编译器统一 Go 1.27.4，固定 Caddy 2.11.9 源码重新编译。
+- 修复 commit：5b2f617；当时将 go.mod 最低版本与两个镜像编译器统一 Go 1.27.4，固定 Caddy 2.11.9 源码重新编译。后续部署已按用户要求改为原生 systemd。
 - Done right: 保存修复前扫描记录，以修复版本重跑测试、构建、govulncheck 和容器验证，并核对二进制 build-info。
+- Seen 1× (2026-11-15).
+
+**安装器的显式配置参数必须同步写入应用配置和服务定义。**
+- Release 安装器静态审查发现 `--data-dir` 原先仅改变服务工作目录，已有配置升级时未触发 DATABASE_PATH 更新；尚未执行安装，未影响实际数据。
+- 修复 commit：本次 Release/systemd 交付提交；显式数据目录触发配置更新，并检查旧配置派生路径是否被 ProtectHome 屏蔽。
+- Done right: 同时核对参数解析、DATABASE_PATH 与 WorkingDirectory，更新配置时保留原密钥和其他参数；仅做静态检查，实际安装由用户验证。
+- Seen 1× (2026-11-15).
+
+**用户变更验证与发布边界后，要立即停止原流程并明确剩余交付。**
+- 最终交付阶段用户要求停止 Docker/实际构建、由用户推送验证；核心功能完成不代表新增 Release workflow 与安装脚本已经完成。
+- 修复 commit：本次 Release/systemd 交付提交；补齐 workflow/installer 后仅静态检查，不推送不发布，清理前核对分支均已合并。
+- Done right: 如实报告新增交付尚未落盘，完成并保留审核证据后再声明完成。
 - Seen 1× (2026-11-15).

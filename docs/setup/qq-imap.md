@@ -50,19 +50,19 @@ QQ 接入页只接受**安全传输**的请求：
 
 `PUBLIC_BASE_URL` 为 HTTPS 只说明链接长什么样，**不能**证明当前请求就是 HTTPS；服务端始终按上述规则独立判断。
 
-### Docker Compose 场景
+### systemd 与本机反向代理
 
-`deployments/docker-compose.yml` 中：
+默认原生安装监听 `127.0.0.1:8080`，由本机 Caddy 或 Nginx 终止 TLS：
 
-- 应用与 Caddy 位于固定私有网段 `10.89.0.0/24`（`backend` 网络）。
-- 应用不发布任何端口，只能经 Caddy 访问。
-- `TRUSTED_PROXY_CIDRS` 默认 `10.89.0.0/24`，与上述网段一致。
+- 设置 `PUBLIC_BASE_URL="https://你的域名"` 与 `ALLOW_INSECURE_HTTP="false"`。
+- `TRUSTED_PROXY_CIDRS="127.0.0.1/32,::1/128"` 只信任本机反代。
+- 反代须传递正确的 `X-Forwarded-Proto: https`，应用端口仅对本机开放。
 
-修改网段时必须同步修改 `TRUSTED_PROXY_CIDRS`；不要使用 `0.0.0.0/0`、`::/0` 或过宽前缀（配置加载会直接拒绝）。
+修改 `/etc/email-invoice-guard/env` 后重启服务。不要使用 `0.0.0.0/0`、`::/0` 或过宽前缀（配置加载会直接拒绝）。
 
-### 直接暴露 / 其他反代
+### 其他反代
 
-若不用 Caddy，可让应用直接监听并自行终止 TLS，或仅信任你自己的反代地址段，例如：
+使用远程反代时，由反代终止 TLS，并仅信任其具体来源地址或受控地址段，例如：
 
 ```dotenv
 TRUSTED_PROXY_CIDRS=192.168.50.0/24

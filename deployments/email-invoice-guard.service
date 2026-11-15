@@ -1,0 +1,27 @@
+# Managed by Email-Invoice-Guard installer.
+[Unit]
+Description=Email-Invoice-Guard
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=email-invoice-guard
+Group=email-invoice-guard
+EnvironmentFile=/etc/email-invoice-guard/env
+WorkingDirectory=/var/lib/email-invoice-guard
+ExecStart=/usr/local/lib/email-invoice-guard/email-invoice-guard
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/email-invoice-guard
+
+[Install]
+WantedBy=multi-user.target

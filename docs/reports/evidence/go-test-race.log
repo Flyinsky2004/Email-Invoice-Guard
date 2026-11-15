@@ -1,0 +1,19 @@
+ok  	email-invoice-guard/cmd/server	1.559s
+ok  	email-invoice-guard/internal/app	1.513s
+ok  	email-invoice-guard/internal/assets	1.363s
+ok  	email-invoice-guard/internal/core	1.372s
+ok  	email-invoice-guard/internal/httpserver/oauth	1.420s
+ok  	email-invoice-guard/internal/httpserver/server	1.419s
+ok  	email-invoice-guard/internal/invoice/lifecycle	1.373s
+ok  	email-invoice-guard/internal/invoice/parser	1.481s
+ok  	email-invoice-guard/internal/mailproc	1.452s
+ok  	email-invoice-guard/internal/providers/imap	2.301s
+?   	email-invoice-guard/internal/providers/imap/imaptest	[no test files]
+ok  	email-invoice-guard/internal/providers/microsoft	2.664s
+ok  	email-invoice-guard/internal/providers/qq	1.469s
+ok  	email-invoice-guard/internal/reminder	1.393s
+ok  	email-invoice-guard/internal/storage	4.766s
+ok  	email-invoice-guard/internal/sync	1.542s
+ok  	email-invoice-guard/internal/telegram	2.604s
+ok  	email-invoice-guard/tests/e2e	2.086s
+ok  	email-invoice-guard/tests/integration	1.713s

@@ -1,0 +1,54 @@
+{
+  "source_commit": "5b2f617c3994b378956eee4e30e56b4970f64cd1",
+  "gofmt": {
+    "exit_code": 0,
+    "seconds": 0.031
+  },
+  "go-version": {
+    "exit_code": 0,
+    "seconds": 0.013
+  },
+  "toolchain": "go version go1.27.4 darwin/arm64",
+  "go-mod-verify": {
+    "exit_code": 0,
+    "seconds": 0.823
+  },
+  "go-vet": {
+    "exit_code": 0,
+    "seconds": 9.406
+  },
+  "go-test": {
+    "exit_code": 0,
+    "seconds": 4.686
+  },
+  "tests": {
+    "passed_with_subtests": 592,
+    "top_level": 499,
+    "skipped": 0,
+    "packages": 18
+  },
+  "go-test-race": {
+    "exit_code": 0,
+    "seconds": 26.42
+  },
+  "linux-amd64": {
+    "exit_code": 0,
+    "seconds": 7.217
+  },
+  "linux-arm64": {
+    "exit_code": 0,
+    "seconds": 6.785
+  },
+  "linux-file": {
+    "exit_code": 0,
+    "seconds": 0.006
+  },
+  "linux-build-info": {
+    "exit_code": 0,
+    "seconds": 0.012
+  },
+  "modules": {
+    "exit_code": 0,
+    "seconds": 0.022
+  }
+}

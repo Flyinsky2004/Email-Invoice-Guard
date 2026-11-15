@@ -1,0 +1,130 @@
+name: Release Linux binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild (for example v1.0.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+    steps:
+      - id: tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$ ]] || {
+            echo 'Use a release tag containing letters, numbers, dots, underscores, + or -.' >&2
+            exit 1
+          }
+          printf 'value=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.metadata.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting, dependencies and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l cmd internal tests)"
+          bash -n scripts/install.sh
+          go mod verify
+          go vet ./...
+          go test -race -count=1 ./...
+
+  build:
+    needs: [metadata, verify]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.metadata.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build and package
+        env:
+          VERSION: ${{ needs.metadata.outputs.tag }}
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/package
+          commit=$(git rev-parse HEAD)
+          built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          go build -trimpath -buildvcs=false \
+            -ldflags="-s -w -X main.version=$VERSION -X main.commit=$commit -X main.buildTime=$built_at" \
+            -o dist/package/email-invoice-guard ./cmd/server
+          cp README.md .env.example scripts/install.sh deployments/email-invoice-guard.service dist/package/
+          mkdir -p dist/package/docs
+          cp -R docs/setup docs/operations dist/package/docs/
+          tar -C dist/package -czf "dist/email-invoice-guard_${VERSION}_linux_${GOARCH}.tar.gz" .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: [metadata, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.metadata.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: linux-*
+          merge-multiple: true
+          path: dist
+      - name: Attach binaries, checksums and installer to the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum email-invoice-guard_*.tar.gz > SHA256SUMS
+          gh release view "$RELEASE_TAG" >/dev/null
+          gh release upload "$RELEASE_TAG" email-invoice-guard_*.tar.gz SHA256SUMS --clobber
+          # Publish the entry point after all binary assets are available.
+          gh release upload "$RELEASE_TAG" ../scripts/install.sh --clobber

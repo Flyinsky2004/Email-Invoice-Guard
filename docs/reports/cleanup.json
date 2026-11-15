@@ -1,0 +1,56 @@
+[
+  {
+    "task": "T01",
+    "merged_tip": "6ff11faed00416568c7af2573d7e3056abf9df53",
+    "branch_removed": true,
+    "worktree_removed": true
+  },
+  {
+    "task": "T02",
+    "merged_tip": "664bd9e77d0a6fd8c46ff1f597d7e9267c21bd04",
+    "branch_removed": true,
+    "worktree_removed": true
+  },
+  {
+    "task": "T03",
+    "merged_tip": "81fb5c5df3fca74ace516816e250cf8f10d7c816",
+    "branch_removed": true,
+    "worktree_removed": true
+  },
+  {
+    "task": "T04",
+    "merged_tip": "27955cdf8d8ee26d58995b7f5dec021df5d7971d",
+    "branch_removed": true,
+    "worktree_removed": true
+  },
+  {
+    "task": "T05",
+    "merged_tip": "8e315d26def6ad5514fbf3d52a90b68d67387c2c",
+    "branch_removed": true,
+    "worktree_removed": true
+  },
+  {
+    "task": "T06",
+    "merged_tip": "2b19821bb27f8644227c4aecb0bb8520a03013a5",
+    "branch_removed": true,
+    "worktree_removed": true
+  },
+  {
+    "task": "T07",
+    "merged_tip": "5bde8a7e4390fd38e6635a08726a31d1f3fd16f2",
+    "branch_removed": true,
+    "worktree_removed": true
+  },
+  {
+    "task": "T08",
+    "merged_tip": "d4cabea538eca4ca266376df34a45279193da12d",
+    "branch_removed": true,
+    "worktree_removed": true
+  },
+  {
+    "task": "calibration",
+    "merged_tip": "551cad85f78c8a58bb2c6913a60d6645b854d2a2",
+    "branch_removed": true,
+    "worktree_removed": true
+  }
+]
