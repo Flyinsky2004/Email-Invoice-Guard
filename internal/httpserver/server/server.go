@@ -21,6 +21,9 @@ const (
 
 	defaultListenAddress = ":8080"
 	defaultHealthPath    = "/healthz"
+
+	oauthCallbackPath = "/oauth/microsoft/callback"
+	qqSetupPath       = "/setup/qq"
 )
 
 // Mounts carries the optional onboarding handlers. A nil handler leaves its
@@ -37,16 +40,18 @@ func NewWithMounts(cfg core.Config, store core.Store, mounts Mounts) *http.Serve
 	mux := http.NewServeMux()
 
 	healthPath := cfg.HealthPath
-	if healthPath == "" {
+	if healthPath == "" || healthPath == oauthCallbackPath || healthPath == qqSetupPath {
+		// Never let a misconfigured health path collide with a reserved route
+		// and panic the mux at startup.
 		healthPath = defaultHealthPath
 	}
 	mux.Handle(healthPath, healthHandler(store))
 
 	if mounts.OAuth != nil {
-		mux.Handle("/oauth/microsoft/callback", mounts.OAuth)
+		mux.Handle(oauthCallbackPath, mounts.OAuth)
 	}
 	if mounts.QQ != nil {
-		mux.Handle("/setup/qq", mounts.QQ)
+		mux.Handle(qqSetupPath, mounts.QQ)
 	}
 
 	addr := cfg.ListenAddress

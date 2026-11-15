@@ -39,6 +39,7 @@ const (
 
 	encryptionKeySize = 32
 	microsoftCallback = "/oauth/microsoft/callback"
+	qqSetupPath       = "/setup/qq"
 )
 
 // LoadConfig reads configuration from the process environment. It returns an
@@ -115,6 +116,8 @@ func loadConfig(get func(string) string) (core.Config, error) {
 	cfg.HealthPath = l.strDefault("HEALTH_PATH", defaultHealthPath)
 	if !strings.HasPrefix(cfg.HealthPath, "/") {
 		add(errors.New("HEALTH_PATH: must start with /"))
+	} else if cfg.HealthPath == microsoftCallback || cfg.HealthPath == qqSetupPath {
+		add(errors.New("HEALTH_PATH: conflicts with a reserved route"))
 	}
 
 	cfg.Timezone = l.strDefault("TIMEZONE", defaultTimezone)

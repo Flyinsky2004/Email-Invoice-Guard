@@ -186,6 +186,7 @@ func TestLoadConfigRejectsBadSchedule(t *testing.T) {
 		{"sync format", "SYNC_INTERVAL", "sixty"},
 		{"shutdown", "SHUTDOWN_TIMEOUT", "-1s"},
 		{"health path", "HEALTH_PATH", "healthz"},
+		{"health collision", "HEALTH_PATH", "/setup/qq"},
 		{"listen", "LISTEN_ADDRESS", "8080"},
 	}
 	for _, c := range cases {

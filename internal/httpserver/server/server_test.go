@@ -182,6 +182,24 @@ func TestPostBodyIsBounded(t *testing.T) {
 	}
 }
 
+func TestHealthPathCollisionFallsBack(t *testing.T) {
+	cfg := testConfig()
+	cfg.HealthPath = qqSetupPath
+	qq := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Must not panic on duplicate mux registration.
+	srv := NewWithMounts(cfg, nil, Mounts{QQ: qq})
+
+	if rec := serve(t, srv.Handler, http.MethodGet, defaultHealthPath, nil); rec.Code != http.StatusOK {
+		t.Fatalf("fallback health status: %d", rec.Code)
+	}
+	if rec := serve(t, srv.Handler, http.MethodGet, qqSetupPath, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("qq route status: %d", rec.Code)
+	}
+}
+
 func TestDefaultListenAddressAndHealthPath(t *testing.T) {
 	srv := NewWithMounts(core.Config{}, nil, Mounts{})
 	if srv.Addr != defaultListenAddress {
