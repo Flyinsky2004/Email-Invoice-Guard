@@ -267,3 +267,9 @@
 - 修复 commit：本次脚本交付调整（`scripts/update.sh` 入库，文档改用 raw.githubusercontent.com 的 main 地址，Release 只上传二进制与校验和）。
 - Done right: 脚本从仓库 `main` 获取；`update.sh` 负责取最新 `install.sh` 并执行升级；Release 工作流只发布二进制、`SHA256SUMS` 与压缩包，脚本修复无需发版。
 - Seen 1× (2026-11-15).
+
+**提交前必须扫描改动文件，确认没有残留占位符替换后的真实凭据。**
+- T12 实现中两次在 `wizard_test.go` / `manual_delivery_test.go` 的测试 URL 写入凭据占位符语法，工具替换后真实值进入工作区；提交前发现并改为 `"user:"+"pass"` 运行时拼接，未进入提交。根因同 T04 凭据占位符条目。
+- 修复 commit：待定位（本次 T12 提交）。
+- Done right: 测试凭据只写明显非机密的字面量或运行时拼接；提交前对改动文件 grep `user:`/凭据占位符语法，确认只剩安全字面量。
+- Seen 1× (2026-11-15).

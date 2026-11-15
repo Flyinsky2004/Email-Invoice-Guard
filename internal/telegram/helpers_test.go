@@ -22,6 +22,7 @@ import (
 // behavior. Unset methods return safe zero values.
 type fakeStore struct {
 	core.Store
+	core.ManualReminderRepository
 
 	mu       sync.Mutex
 	settings map[string]string
@@ -47,6 +48,9 @@ type fakeStore struct {
 	listTelegramMessages  func(context.Context, string) ([]core.TelegramMessage, error)
 	deliveryMessages      func(context.Context, string) ([]core.TelegramMessage, error)
 	recordTelegramMessage func(context.Context, core.TelegramMessage) error
+	transitionOccurrence  func(context.Context, string, core.ManualOccurrenceStatus, core.ManualOccurrenceStatus, int64, time.Time) (core.ManualOccurrence, error)
+	getDispatch           func(context.Context, string) (core.ManualDispatch, error)
+	listPlanDispatches    func(context.Context, string) ([]core.ManualDispatch, error)
 }
 
 func newFakeStore() *fakeStore {
@@ -214,6 +218,27 @@ func (s *fakeStore) RecordTelegramMessage(ctx context.Context, message core.Tele
 		return s.recordTelegramMessage(ctx, message)
 	}
 	return nil
+}
+
+func (s *fakeStore) TransitionOccurrence(ctx context.Context, id string, from, to core.ManualOccurrenceStatus, actor int64, now time.Time) (core.ManualOccurrence, error) {
+	if s.transitionOccurrence != nil {
+		return s.transitionOccurrence(ctx, id, from, to, actor, now)
+	}
+	return core.ManualOccurrence{}, core.ErrNotFound
+}
+
+func (s *fakeStore) GetDispatch(ctx context.Context, id string) (core.ManualDispatch, error) {
+	if s.getDispatch != nil {
+		return s.getDispatch(ctx, id)
+	}
+	return core.ManualDispatch{}, core.ErrNotFound
+}
+
+func (s *fakeStore) ListPlanDispatches(ctx context.Context, planID string) ([]core.ManualDispatch, error) {
+	if s.listPlanDispatches != nil {
+		return s.listPlanDispatches(ctx, planID)
+	}
+	return nil, nil
 }
 
 type fakePayment struct {
@@ -491,6 +516,11 @@ func newTestEnv(t *testing.T) *testEnv {
 
 func (e *testEnv) rebuild() {
 	e.bot = New(e.store, e.payment, e.syncer, e.parsers, e.onboarding, e.cfg, e.tg.server.Client(), slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+}
+
+// withManual rebuilds the bot through NewWithManual with the supplied service.
+func (e *testEnv) withManual(manual core.ManualReminderService) {
+	e.bot = NewWithManual(e.store, e.payment, e.syncer, e.parsers, e.onboarding, manual, e.cfg, e.tg.server.Client(), slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
 func (e *testEnv) message(text string) *message {

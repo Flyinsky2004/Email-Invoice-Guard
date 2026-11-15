@@ -22,6 +22,10 @@ func (b *Bot) handleCallback(ctx context.Context, cq *callbackQuery) {
 	}
 	action, id, ok := parseCallbackData(cq.Data)
 	if !ok {
+		if waction, wid, value, wok := parseWizardCallback(cq.Data); wok {
+			b.handleWizardCallback(ctx, cq, waction, wid, value)
+			return
+		}
 		b.answerCallback(ctx, cq.ID, "Unknown action", false)
 		return
 	}
@@ -42,6 +46,18 @@ func (b *Bot) handleCallback(ctx context.Context, cq *callbackQuery) {
 		b.callbackAssetHistory(ctx, cq, id)
 	case cbRemoveConfirm:
 		b.callbackRemoveAccount(ctx, cq, id)
+	case cbManualPaid:
+		b.callbackManualPaid(ctx, cq, id)
+	case cbManualCancel:
+		b.callbackManualCancel(ctx, cq, id)
+	case cbManualUndo:
+		b.callbackManualUndo(ctx, cq, id)
+	case cbManualView:
+		b.callbackManualView(ctx, cq, id)
+	case cbManualHistory:
+		b.callbackManualHistory(ctx, cq, id)
+	case cbManualDispatch:
+		b.callbackManualDispatch(ctx, cq, id)
 	default:
 		b.answerCallback(ctx, cq.ID, "Unknown action", false)
 	}

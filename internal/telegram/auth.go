@@ -18,6 +18,20 @@ const (
 	cbInvoice       = "iv"
 	cbAssetHistory  = "ah"
 	cbRemoveConfirm = "rmc"
+
+	// Manual reminder callbacks. The identifier is always a 32-hex ID.
+	cbManualPaid     = "mp"
+	cbManualCancel   = "mc"
+	cbManualUndo     = "mu"
+	cbManualView     = "mv"
+	cbManualHistory  = "mh"
+	cbManualDispatch = "mdc"
+
+	// Wizard callbacks use a separate namespace and parser.
+	cbWizardAdvance = "wz"
+	cbWizardCancel  = "wx"
+	cbWizardBack    = "wb"
+	cbWizardValue   = "wv"
 )
 
 func callbackData(action, id string) string { return action + ":" + id }
@@ -28,20 +42,74 @@ func parseCallbackData(data string) (action, id string, ok bool) {
 		return "", "", false
 	}
 	action, id = data[:i], data[i+1:]
-	if len(id) != 32 {
+	if !validID(id) {
 		return "", "", false
 	}
-	for _, r := range id {
-		if !isLowerHex(r) {
-			return "", "", false
-		}
-	}
 	switch action {
-	case cbPaidPrompt, cbPaidConfirm, cbPaidUndo, cbPaidCancel, cbEmail, cbInvoice, cbAssetHistory, cbRemoveConfirm:
+	case cbPaidPrompt, cbPaidConfirm, cbPaidUndo, cbPaidCancel, cbEmail, cbInvoice, cbAssetHistory, cbRemoveConfirm,
+		cbManualPaid, cbManualCancel, cbManualUndo, cbManualView, cbManualHistory, cbManualDispatch:
 		return action, id, true
 	default:
 		return "", "", false
 	}
+}
+
+// parseWizardCallback parses the wizard namespace. Value selection carries one
+// short token after the wizard ID; every callback_data stays within 64 bytes.
+func parseWizardCallback(data string) (action, id, value string, ok bool) {
+	if len(data) > 64 {
+		return "", "", "", false
+	}
+	parts := strings.Split(data, ":")
+	switch parts[0] {
+	case cbWizardAdvance, cbWizardCancel, cbWizardBack:
+		if len(parts) != 2 {
+			return "", "", "", false
+		}
+		id = parts[1]
+	case cbWizardValue:
+		if len(parts) != 3 {
+			return "", "", "", false
+		}
+		id, value = parts[1], parts[2]
+		if !validValueToken(value) {
+			return "", "", "", false
+		}
+	default:
+		return "", "", "", false
+	}
+	if !validID(id) {
+		return "", "", "", false
+	}
+	return parts[0], id, value, true
+}
+
+// validID accepts the 32 lowercase hex identifiers used across the domain.
+func validID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	for _, r := range id {
+		if !isLowerHex(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// validValueToken bounds wizard value tokens to a safe callback alphabet.
+func validValueToken(value string) bool {
+	if len(value) == 0 || len(value) > 20 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func isLowerHex(r rune) bool {

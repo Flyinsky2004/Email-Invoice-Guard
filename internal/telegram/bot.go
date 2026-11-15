@@ -29,6 +29,7 @@ type Bot struct {
 	syncer     core.SyncService
 	parsers    core.ParserRegistry
 	onboarding map[core.ProviderType]core.AccountOnboarding
+	manual     core.ManualReminderService
 	cfg        core.Config
 	log        *slog.Logger
 	api        *apiClient
@@ -42,11 +43,21 @@ type Bot struct {
 	syncMu      sync.Mutex
 	syncRunning bool
 	syncWG      sync.WaitGroup
+
+	wizardMu sync.Mutex
+	wizards  map[string]*wizardState
 }
 
-// New constructs a Bot. The HTTP client is injected for tests; when nil a
-// client whose timeout exceeds the long-poll timeout is used.
+// New constructs a Bot without manual recurring reminders. It keeps the exact
+// original signature and delegates to NewWithManual with a nil manual service.
 func New(store core.Store, payment core.PaymentConfirmationService, syncer core.SyncService, parsers core.ParserRegistry, onboarding map[core.ProviderType]core.AccountOnboarding, cfg core.Config, client *http.Client, logger *slog.Logger) *Bot {
+	return NewWithManual(store, payment, syncer, parsers, onboarding, nil, cfg, client, logger)
+}
+
+// NewWithManual constructs a Bot with an optional manual reminder service. A
+// nil manual service disables manual commands, callbacks and the manual
+// rendering branch while leaving mail and invoice behavior unchanged.
+func NewWithManual(store core.Store, payment core.PaymentConfirmationService, syncer core.SyncService, parsers core.ParserRegistry, onboarding map[core.ProviderType]core.AccountOnboarding, manual core.ManualReminderService, cfg core.Config, client *http.Client, logger *slog.Logger) *Bot {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -68,12 +79,14 @@ func New(store core.Store, payment core.PaymentConfirmationService, syncer core.
 		syncer:     syncer,
 		parsers:    parsers,
 		onboarding: onboarding,
+		manual:     manual,
 		cfg:        cfg,
 		log:        logger,
 		api:        &apiClient{baseURL: base, token: cfg.Telegram.Token, http: client},
 		limiter:    newRateLimiter(cfg.Telegram.RateInterval),
 		now:        time.Now,
 		sleep:      sleepCtx,
+		wizards:    make(map[string]*wizardState),
 	}
 }
 
