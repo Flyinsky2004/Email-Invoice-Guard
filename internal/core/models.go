@@ -153,7 +153,14 @@ type AssetFilter struct {
 	ProviderID, AccountID string
 	Limit                 int
 }
-type DeliveryPayload struct{ Kind, EmailID, InvoiceID, ReminderID, Text string }
+type DeliveryPayload struct {
+	Kind, EmailID, InvoiceID, ReminderID, Text string
+
+	// Manual fields are additive: an empty ManualPlanID means the payload is a
+	// mail or invoice delivery and must render exactly as before.
+	ManualPlanID        string
+	ManualOccurrenceIDs []string
+}
 type Delivery struct {
 	ID, DedupKey string
 	Payload      DeliveryPayload
@@ -179,3 +186,103 @@ type SecureSession struct {
 }
 type SystemStatus struct{ Accounts, Emails, PendingInvoices, PendingDeliveries int64 }
 type ParserInfo struct{ Vendor, Version string }
+
+// ManualPlanStatus is the lifecycle of an operator-declared recurring bill.
+// A plan is independent of mail: only an explicit user action changes it.
+type ManualPlanStatus string
+
+const (
+	ManualPlanActive    ManualPlanStatus = "ACTIVE"
+	ManualPlanPaused    ManualPlanStatus = "PAUSED"
+	ManualPlanCancelled ManualPlanStatus = "CANCELLED"
+)
+
+// ManualOccurrenceStatus is the payment state of one billing period. Only an
+// authorized user confirmation can move an occurrence to PAID_CONFIRMED.
+type ManualOccurrenceStatus string
+
+const (
+	ManualOccurrencePending   ManualOccurrenceStatus = "PENDING_CONFIRMATION"
+	ManualOccurrencePaid      ManualOccurrenceStatus = "PAID_CONFIRMED"
+	ManualOccurrenceCancelled ManualOccurrenceStatus = "CANCELLED"
+)
+
+// ManualDispatchDailySummary is the only dispatch kind in v1: one message per
+// plan per local calendar day, regardless of how many occurrences are due.
+const ManualDispatchDailySummary = "DAILY_SUMMARY"
+
+// Manual reminder event types. They are stored verbatim and never re-derived.
+const (
+	ManualEventPlanCreated                = "PLAN_CREATED"
+	ManualEventPlanUpdated                = "PLAN_UPDATED"
+	ManualEventPlanPaused                 = "PLAN_PAUSED"
+	ManualEventPlanResumed                = "PLAN_RESUMED"
+	ManualEventPlanCancelled              = "PLAN_CANCELLED"
+	ManualEventOccurrenceCreated          = "OCCURRENCE_CREATED"
+	ManualEventReminderSent               = "REMINDER_SENT"
+	ManualEventPaymentConfirmed           = "PAYMENT_CONFIRMED"
+	ManualEventPaymentConfirmationRevoked = "PAYMENT_CONFIRMATION_REVOKED"
+	ManualEventOccurrenceCancelled        = "OCCURRENCE_CANCELLED"
+)
+
+// ManualPlan is an operator-declared recurring bill. BillingDay is clamped to
+// the last day of short months; NextDueDate is the first date still owed.
+type ManualPlan struct {
+	ID, Title, ProviderName, AssetID, Description string
+	Amount                                        *Money
+	BillingDay                                    int
+	ReminderTime, Timezone, PaymentURL, Notes     string
+	Status                                        ManualPlanStatus
+	NextDueDate                                   Date
+	CreatedAt, UpdatedAt                          time.Time
+	CancelledAt                                   *time.Time
+}
+
+// ManualOccurrence is one billing period of a plan. Amount is the plan amount
+// snapshot at creation so later edits cannot rewrite financial history.
+type ManualOccurrence struct {
+	ID, PlanID              string
+	DueDate                 Date
+	Amount                  *Money
+	Status                  ManualOccurrenceStatus
+	NotifiedAt, ConfirmedAt *time.Time
+	ConfirmedBy             *int64
+	CreatedAt, UpdatedAt    time.Time
+}
+
+// ManualDispatch links one summary outbox delivery to the occurrences it
+// covered. Status mirrors the outbox row for the same outbox ID.
+type ManualDispatch struct {
+	ID, PlanID, OutboxID string
+	LocalDate            Date
+	Kind                 string
+	OccurrenceIDs        []string
+	Status               DeliveryStatus
+	CreatedAt            time.Time
+	SentAt               *time.Time
+}
+
+// ManualReminderEvent is an append-only audit record. Metadata is bounded JSON.
+type ManualReminderEvent struct {
+	ID, PlanID, OccurrenceID, EventType string
+	ActorID                             int64
+	CreatedAt                           time.Time
+	Metadata                            string
+}
+
+type ManualPlanFilter struct {
+	Status ManualPlanStatus
+	Limit  int
+}
+type ManualOccurrenceFilter struct {
+	PlanID        string
+	Status        ManualOccurrenceStatus
+	DueOnOrBefore Date
+	Limit         int
+}
+type ManualReminderInput struct {
+	Title, ProviderName, AssetID, Description string
+	Amount                                    *Money
+	BillingDay                                int
+	ReminderTime, Timezone, PaymentURL, Notes string
+}

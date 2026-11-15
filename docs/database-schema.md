@@ -29,3 +29,73 @@ Timestamp representation: UTC RFC3339Nano or Unix nanoseconds consistently; cale
 | settings | key PK,value,updated_at |
 
 Foreign keys reference retained historical account rows. RemoveAccount soft-disables, erases encrypted credentials and live cursors; it must not cascade-delete historical invoices. Emails and parse failure diagnostics survive parser errors. Persist diagnostic reasons via review invoice and/or email normalized metadata/failure row. Migration tests cover empty DB, idempotent reopen, rollback, unique/FK violation, concurrency, encrypted blobs, backup/restore, and WAL recovery.
+
+## Manual recurring reminders (v2, additive)
+
+Migration `0002_manual_reminders.sql` adds five tables. It is additive: no v1 table, index or statement changes. Conventions match v1 — timestamps fixed-width UTC `2006-01-02T15:04:05.000000000Z`, calendar dates `YYYY-MM-DD`, money integer minor units, IDs 32 lowercase hex, booleans 0/1.
+
+```sql
+CREATE TABLE IF NOT EXISTS manual_reminder_plans (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, provider_name TEXT NOT NULL DEFAULT '',
+    asset_id TEXT REFERENCES assets(id), description TEXT NOT NULL DEFAULT '',
+    amount_minor INTEGER, currency TEXT,
+    billing_day INTEGER NOT NULL CHECK (billing_day BETWEEN 1 AND 31),
+    reminder_time TEXT NOT NULL, timezone TEXT NOT NULL,
+    payment_url TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE','PAUSED','CANCELLED')),
+    next_due_date TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    cancelled_at TEXT,
+    CHECK ((amount_minor IS NULL AND currency IS NULL)
+        OR (amount_minor IS NOT NULL AND currency IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_manual_plans_status_due
+    ON manual_reminder_plans(status, next_due_date);
+
+CREATE TABLE IF NOT EXISTS manual_reminder_occurrences (
+    id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES manual_reminder_plans(id),
+    due_date TEXT NOT NULL, amount_minor_snapshot INTEGER, currency_snapshot TEXT,
+    payment_status TEXT NOT NULL CHECK (payment_status IN
+        ('PENDING_CONFIRMATION','PAID_CONFIRMED','CANCELLED')),
+    notified_at TEXT, confirmed_at TEXT, confirmed_by INTEGER,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE (plan_id, due_date)
+);
+CREATE INDEX IF NOT EXISTS idx_manual_occ_status
+    ON manual_reminder_occurrences(payment_status, due_date);
+
+CREATE TABLE IF NOT EXISTS manual_reminder_dispatches (
+    id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES manual_reminder_plans(id),
+    outbox_id TEXT NOT NULL REFERENCES delivery_outbox(id), local_date TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('DAILY_SUMMARY')),
+    status TEXT NOT NULL CHECK (status IN
+        ('PENDING','SENDING','SENT','FAILED','UNKNOWN','SKIPPED')),
+    created_at TEXT NOT NULL, sent_at TEXT,
+    UNIQUE (outbox_id), UNIQUE (plan_id, local_date, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_manual_dispatches_plan
+    ON manual_reminder_dispatches(plan_id, local_date);
+
+CREATE TABLE IF NOT EXISTS manual_reminder_dispatch_occurrences (
+    dispatch_id TEXT NOT NULL REFERENCES manual_reminder_dispatches(id),
+    occurrence_id TEXT NOT NULL REFERENCES manual_reminder_occurrences(id),
+    PRIMARY KEY (dispatch_id, occurrence_id)
+);
+CREATE INDEX IF NOT EXISTS idx_manual_dispatch_occ_occurrence
+    ON manual_reminder_dispatch_occurrences(occurrence_id);
+
+CREATE TABLE IF NOT EXISTS manual_reminder_events (
+    id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES manual_reminder_plans(id),
+    occurrence_id TEXT REFERENCES manual_reminder_occurrences(id),
+    event_type TEXT NOT NULL CHECK (event_type IN (
+        'PLAN_CREATED','PLAN_UPDATED','PLAN_PAUSED','PLAN_RESUMED','PLAN_CANCELLED',
+        'OCCURRENCE_CREATED','REMINDER_SENT','PAYMENT_CONFIRMED',
+        'PAYMENT_CONFIRMATION_REVOKED','OCCURRENCE_CANCELLED')),
+    actor_id INTEGER NOT NULL DEFAULT 0, event_at TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_manual_events_plan
+    ON manual_reminder_events(plan_id, event_at);
+```
+
+Outbox mirror rule: `manual_reminder_dispatches.status` mirrors the linked `delivery_outbox` row. The existing claim, lease-expiry, complete, fail and skip operations must update the manual dispatch mirror in the same transaction as the outbox row, exactly as they already synchronize `invoice_reminders`. The `invoice_reminders` statements are not modified; `UNIQUE(outbox_id)` makes the mirror update a single-row, idempotent write. `sent_at` is set only when the outbox reaches SENT.
+

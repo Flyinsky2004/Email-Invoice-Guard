@@ -114,3 +114,60 @@ type AssetLinker interface {
 // InvoiceURLValidator is an optional merchant policy implemented by parsers
 // and delegated by registries. Adding a vendor never needs Telegram changes.
 type InvoiceURLValidator interface{ ValidateInvoiceURL(Invoice) bool }
+
+// ManualReminderRepository persists operator-declared recurring plans and their
+// occurrences. It is standalone on purpose: storage.Store satisfies it without
+// widening Repository or changing any existing signature.
+type ManualReminderRepository interface {
+	CreatePlan(context.Context, ManualPlan, ManualReminderEvent) (ManualPlan, error)
+	UpdatePlan(context.Context, ManualPlan, ManualReminderEvent) (ManualPlan, error)
+	GetPlan(context.Context, string) (ManualPlan, error)
+	ListPlans(context.Context, ManualPlanFilter) ([]ManualPlan, error)
+	PausePlan(context.Context, string, int64, time.Time) (ManualPlan, error)
+	// ResumePlan sets PAUSED -> ACTIVE and the new next_due_date atomically.
+	// Missed periods are never backfilled.
+	ResumePlan(context.Context, string, Date, int64, time.Time) (ManualPlan, error)
+	// CancelPlan cancels pending occurrences and skips queued manual outbox
+	// rows atomically.
+	CancelPlan(context.Context, string, int64, time.Time) (ManualPlan, error)
+
+	// CreateOccurrence inserts the occurrence, CAS-advances next_due_date from
+	// occ.DueDate to the supplied next date, and writes OCCURRENCE_CREATED
+	// atomically. It returns false when the plan is not ACTIVE, the occurrence
+	// already exists, or next_due_date no longer matches occ.DueDate.
+	CreateOccurrence(context.Context, ManualOccurrence, Date) (bool, error)
+	// CreateDispatch atomically inserts one summary dispatch, its join rows and
+	// the outbox delivery. It returns false when no supplied occurrence is still
+	// pending or a dispatch for (planID, localDate, kind) already exists.
+	CreateDispatch(context.Context, string, []string, ManualDispatch, Delivery) (bool, error)
+
+	GetOccurrence(context.Context, string) (ManualOccurrence, error)
+	ListOccurrences(context.Context, ManualOccurrenceFilter) ([]ManualOccurrence, error)
+	TransitionOccurrence(context.Context, string, ManualOccurrenceStatus, ManualOccurrenceStatus, int64, time.Time) (ManualOccurrence, error)
+
+	GetDispatch(context.Context, string) (ManualDispatch, error)
+	ListPlanDispatches(context.Context, string) ([]ManualDispatch, error)
+	ListManualMessages(context.Context, string) ([]TelegramMessage, error)
+	ManualEvents(context.Context, string) ([]ManualReminderEvent, error)
+}
+
+// ManualReminderService is the user-facing manual reminder domain. It embeds
+// ReminderService so the application can run it beside the invoice scheduler.
+type ManualReminderService interface {
+	ReminderService
+
+	CreatePlan(context.Context, int64, ManualReminderInput) (ManualPlan, error)
+	UpdatePlan(context.Context, int64, string, ManualReminderInput) (ManualPlan, error)
+	PausePlan(context.Context, int64, string) (ManualPlan, error)
+	ResumePlan(context.Context, int64, string) (ManualPlan, error)
+	CancelPlan(context.Context, int64, string) (ManualPlan, error)
+	ConfirmOccurrence(context.Context, int64, string) (ManualOccurrence, error)
+	RevokeOccurrence(context.Context, int64, string) (ManualOccurrence, error)
+
+	GetPlan(context.Context, string) (ManualPlan, error)
+	ListPlans(context.Context, ManualPlanFilter) ([]ManualPlan, error)
+	GetOccurrence(context.Context, string) (ManualOccurrence, error)
+	ListOccurrences(context.Context, ManualOccurrenceFilter) ([]ManualOccurrence, error)
+	ListPlanMessages(context.Context, string) ([]TelegramMessage, error)
+	Events(context.Context, string) ([]ManualReminderEvent, error)
+}
