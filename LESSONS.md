@@ -135,3 +135,9 @@
 - 修复 commit：待定位（本次退修提交）。
 - Done right: 解码失败返回原始编码文本（io.ReadAll 有 partial 时保留 partial+raw），写入 X-Invoice-Guard-Decode-Error 标记并 Warn 日志；MIME 头缺失时由 BODYSTRUCTURE 合成；joinMIMEPart 无条件拼接；损坏 base64/QP、无 MIME 头、正文以 Content-Type 开头均有测试。
 - Seen 1× (2026-11-15).
+
+**新增或修正测试后必须先实际运行，断言以真实归一化输出为准。**
+- T03 实现期间（本提交前）：`HTMLToText` 相邻 `<p>` 归一化为 `\n\n`，测试误断言 `\n` 导致失败；同一轮测试文件漏引 `testing` 包导致编译失败，浪费一次验证循环。
+- 修复 commit：2f158e5（T03 实现提交）。
+- Done right: 先跑 `go test` 看真实输出，再按 `One\n\nTwo` 的空行语义断言；补全 import 后 `go vet` 与 `-race` 全绿。
+- Seen 1× (2026-11-15).
