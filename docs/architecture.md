@@ -15,9 +15,12 @@ flowchart LR
  TX --> Outbox[Persistent outbox]
  Inv --> Reminder[Local calendar reminder scheduler]
  Reminder --> Outbox
+ Manual[Manual plan] --> MSched[Manual reminder scheduler]
+ MSched --> Outbox
  Outbox --> TG[Telegram Long Poll + delivery]
  TG --> Payment[Authorized payment state machine]
  Payment --> Inv
+ Payment --> Manual
 ```
 
 ## Boundaries and consistency
@@ -31,6 +34,12 @@ All incoming monitored mail is persisted and delivered. Classification cannot su
 Outbox lease claim is persisted. Ambiguous network sends become UNKNOWN and retry: at least once, best-effort deduplication, never Telegram exactly once. Per-part Telegram message IDs are retained where possible; restart may duplicate a message after an ambiguous response. Reminder unique(invoice_id, reminder_date), persistent initial-notification day, and pre-send status recheck prevent duplicate tasks and most stale reminders. An already in-flight external send cannot be recalled atomically with a local payment transaction; document this practical limit.
 
 Dates are validated calendar strings; instants use UTC. Asia/Taipei is default scheduler zone; local day difference uses calendar dates, not elapsed local hours through DST. Money is signed integer minor currency units, with explicit currency and nullable optional amounts. Credit is not account balance. Paid means manual user declaration only.
+
+## Manual recurring reminders
+
+Manual plans are an independent reminder source: the operator declares a recurring bill and its billing day, and no mail is required to create, schedule or pay it. They share the persistent outbox and the Telegram delivery path with invoice reminders, so leases, retries, UNKNOWN handling and per-part message IDs behave identically; they keep separate tables and a separate dispatch dedup key.
+
+Each billing period is a persisted occurrence with its own payment state; only an authorized user confirmation marks an occurrence paid, and mail never marks a manual plan or occurrence paid. A plan carries its own timezone and reminder time, so scheduling is evaluated in plan-local calendar days. Billing days beyond a month's length clamp to that month's last day (`last_day` policy). One summary message per plan per local day is produced regardless of how many occurrences are due, and the `(plan_id, local_date, kind)` unique key is the final duplicate guard. Every tick re-reads plan and occurrence state inside its write transaction, so a restart, repeated tick or concurrent confirmation cannot emit a stale or duplicate reminder.
 
 Security: AES-256-GCM credentials and secure-session payloads, external key, state + PKCE, atomic expiring one-time sessions, TLS verification, whitelist user AND chat checks, parameterized SQL, escaped Telegram HTML, untrusted HTML converted to text, fixed safe vendor URL host. No automatic attachment downloads. No raw secret/token/body logging. Setup pages use HTTPS bearer links, no-referrer, no-cache, CSP and one-time POST; never ask for credentials in chat.
 

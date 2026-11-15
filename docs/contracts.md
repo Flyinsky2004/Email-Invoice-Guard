@@ -44,3 +44,18 @@ Added optional core.InvoiceURLValidator { ValidateInvoiceURL(Invoice) bool }. No
 ## Approved change CR003 — confirmed QQ-hosted address aliases
 
 IMAPConfig.AllowedDomains []string and QQ_ALLOWED_DOMAINS permit an explicit operator-maintained address-domain allowlist. Defaults qq.com,foxmail.com. IMAP Source applies it unless a test-only explicit exported override is provided; credentials are still verified against QQ IMAP over TLS before storage. This enables known QQ-hosted aliases without accepting arbitrary IMAP hosts or QQ login passwords. Domain configuration is not proof of access: live authentication must succeed.
+
+## Approved change CR004 — manual recurring reminders
+
+Additive only. `core.ManualReminderRepository` and `core.ManualReminderService` are standalone interfaces; they are deliberately NOT embedded in `Repository`, `Store` or `ReminderService`, so `storage.Store` and every existing implementation keep compiling unchanged. New types (`ManualPlan`, `ManualOccurrence`, `ManualDispatch`, `ManualReminderEvent`, the three filters/input structs), the status/event constants and `core.ManualReminderConfig` (appended to `Config` as `Manual`) are new declarations. `DeliveryPayload` gains two appended fields, `ManualPlanID` and `ManualOccurrenceIDs`; all existing literals are keyed, and an empty `ManualPlanID` keeps the previous mail/invoice rendering path.
+
+Manual deliveries use `DeliveryPayload.Kind: "manual"` and the dedup key `manual-reminder:<planID>:<localDate>`. The dispatch row mirrors the outbox status, so `ClaimDelivery`, `expireLeases`, `CompleteDelivery`, `FailDelivery` and `SkipDelivery` must update the manual dispatch mirror alongside the existing `invoice_reminders` statements without altering them.
+
+Constructors:
+
+- `manual.NewService(repo core.ManualReminderRepository, cfg core.Config, logger *slog.Logger) *Service` implements `core.ManualReminderService`, including `Tick(ctx,now)` and `Run(ctx)`.
+- `telegram.NewWithManual(store core.Store, payment core.PaymentConfirmationService, syncer core.SyncService, parsers core.ParserRegistry, onboarding map[core.ProviderType]core.AccountOnboarding, manual core.ManualReminderService, cfg core.Config, client *http.Client, logger *slog.Logger) *Bot` adds the manual service after onboarding.
+- `telegram.New` keeps its exact current signature and is a nil-passing wrapper over `NewWithManual`. A nil manual service disables manual commands and the manual rendering branch.
+
+`internal/core` remains frozen after this CR: downstream lanes must not change these declarations, and any further interface need is a new CR.
+
