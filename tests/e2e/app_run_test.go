@@ -39,9 +39,14 @@ func TestAppRunStartsServesHealthAndShutsDown(t *testing.T) {
 			PollTimeout:    500 * time.Millisecond,
 			RateInterval:   time.Millisecond,
 		},
-		// No account is configured, so this address is never dialed; it only
-		// has to be a valid host:port for runtime validation.
-		IMAP: core.IMAPConfig{Address: "127.0.0.1:1", ServerName: "imap.test", Timeout: 200 * time.Millisecond},
+		// No account is configured, so the QQ endpoint is never dialed; it only
+		// has to be the supported pinned host for runtime validation.
+		IMAP: core.IMAPConfig{
+			Address:        "imap.qq.com:993",
+			ServerName:     "imap.qq.com",
+			AllowedDomains: []string{"qq.com", "foxmail.com"},
+			Timeout:        200 * time.Millisecond,
+		},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

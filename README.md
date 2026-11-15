@@ -107,6 +107,7 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 | `TELEGRAM_POLL_TIMEOUT` | `25s` | 长轮询超时（须小于 1 分钟） |
 | `TELEGRAM_RATE_INTERVAL` | `1s` | 发送节流间隔 |
 | `TRUSTED_PROXY_CIDRS` | 空 | 允许声明 `X-Forwarded-Proto: https` 的反代网段 |
+| `QQ_ALLOWED_DOMAINS` | `qq.com,foxmail.com` | 允许接入的 QQ 别名域名（裸域名，逗号分隔） |
 | `ALLOW_INSECURE_HTTP` | `false` | 仅本地开发：允许回环地址使用 http |
 
 ### Microsoft（可选）
@@ -115,7 +116,11 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 
 ### QQ IMAP
 
-默认 `imap.qq.com:993`，使用第三方授权码而非 QQ 密码。详见 [docs/setup/qq-imap.md](docs/setup/qq-imap.md)。
+只支持固定主机 `imap.qq.com:993`，使用第三方授权码而非 QQ 密码。默认接受
+`@qq.com` 与 `@foxmail.com`；已确认可走 QQ IMAP 的别名域名可通过
+`QQ_ALLOWED_DOMAINS` 显式加入白名单（裸域名，禁止 scheme/路径/端口/通配符），
+每个别名仍必须通过真实 QQ TLS 登录验证才会保存。详见
+[docs/setup/qq-imap.md](docs/setup/qq-imap.md)。
 
 ## 账号接入
 

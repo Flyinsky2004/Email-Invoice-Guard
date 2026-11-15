@@ -277,11 +277,23 @@ func loadIMAP(l envLoader, allowInsecure bool, publicBase string) (core.IMAPConf
 	cfg.Address = l.strDefault("IMAP_ADDRESS", defaultIMAPAddr)
 	if err := validateHostPort("IMAP_ADDRESS", cfg.Address); err != nil {
 		add(err)
+	} else if host, _, _ := net.SplitHostPort(cfg.Address); !strings.EqualFold(host, defaultIMAPServer) {
+		// Only the verified QQ endpoint is supported; arbitrary IMAP hosts are
+		// never accepted implicitly.
+		add(fmt.Errorf("IMAP_ADDRESS: only %s is supported", defaultIMAPServer))
 	}
 
 	cfg.ServerName = l.strDefault("IMAP_SERVER_NAME", defaultIMAPServer)
+	if !strings.EqualFold(strings.TrimSpace(cfg.ServerName), defaultIMAPServer) {
+		add(fmt.Errorf("IMAP_SERVER_NAME: only %s is supported", defaultIMAPServer))
+	}
 
 	var err error
+	// Explicit QQ-hosted alias domains. Each alias still has to pass a real QQ
+	// TLS login before any account is saved.
+	cfg.AllowedDomains, err = parseDomainList("QQ_ALLOWED_DOMAINS", l.str("QQ_ALLOWED_DOMAINS"), []string{"qq.com", "foxmail.com"})
+	add(err)
+
 	// Trusted proxy peers are opt-in. An empty list means X-Forwarded-Proto is
 	// never honoured and the QQ setup page requires a direct TLS connection.
 	cfg.TrustedProxyCIDRs, err = parseCIDRList("TRUSTED_PROXY_CIDRS", l.str("TRUSTED_PROXY_CIDRS"))
@@ -396,6 +408,96 @@ func parseInt64List(key, raw string) ([]int64, error) {
 		return nil, fmt.Errorf("%s: at least one user ID is required", key)
 	}
 	return out, nil
+}
+
+// parseDomainList validates a comma-separated allowlist of QQ-hosted address
+// domains. Entries must be bare DNS names: no scheme, path, port, userinfo or
+// wildcard. An empty value keeps the documented default.
+func parseDomainList(key, raw string, defaults []string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return append([]string(nil), defaults...), nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		domain, err := normalizeDomain(part)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		if _, dup := seen[domain]; dup {
+			continue
+		}
+		seen[domain] = struct{}{}
+		out = append(out, domain)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s: at least one domain is required", key)
+	}
+	return out, nil
+}
+
+// normalizeDomain lowercases and strictly validates one bare DNS name.
+func normalizeDomain(raw string) (string, error) {
+	d := strings.ToLower(strings.TrimSpace(raw))
+	if d == "" {
+		return "", errors.New("empty domain")
+	}
+	// Reject scheme, path, port, userinfo, query, fragment and wildcard.
+	if strings.ContainsAny(d, ":/@*?&#") || strings.Contains(d, "..") {
+		return "", fmt.Errorf("invalid domain %q", raw)
+	}
+	if strings.HasPrefix(d, ".") || strings.HasSuffix(d, ".") {
+		return "", fmt.Errorf("invalid domain %q", raw)
+	}
+	if net.ParseIP(d) != nil {
+		return "", fmt.Errorf("invalid domain %q", raw)
+	}
+	if len(d) > 253 {
+		return "", fmt.Errorf("invalid domain %q", raw)
+	}
+	labels := strings.Split(d, ".")
+	if len(labels) < 2 {
+		return "", fmt.Errorf("invalid domain %q", raw)
+	}
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 {
+			return "", fmt.Errorf("invalid domain %q", raw)
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return "", fmt.Errorf("invalid domain %q", raw)
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '-' {
+				return "", fmt.Errorf("invalid domain %q", raw)
+			}
+		}
+	}
+	// The final label must contain a letter so purely numeric TLDs are rejected.
+	hasLetter := false
+	for _, r := range labels[len(labels)-1] {
+		if r >= 'a' && r <= 'z' {
+			hasLetter = true
+			break
+		}
+	}
+	if !hasLetter {
+		return "", fmt.Errorf("invalid domain %q", raw)
+	}
+	return d, nil
+}
+
+// validateDomainList re-checks programmatically supplied domains.
+func validateDomainList(key string, domains []string) error {
+	for _, domain := range domains {
+		if _, err := normalizeDomain(domain); err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 // parseCIDRList validates a comma-separated list of proxy networks. The

@@ -17,6 +17,9 @@
 | `REMINDER_TIME: must be HH:MM` | 时间格式错误 | 使用 24 小时制 `09:00` |
 | `TRUSTED_PROXY_CIDRS: ... too broad` / `trusts every address` | 代理网段过宽 | 只写具体反代网段 |
 | `TRUSTED_PROXY_CIDRS: ... must be a network address` | 写了主机位 | 写成网段地址，如 `10.89.0.0/24` |
+| `QQ_ALLOWED_DOMAINS: invalid domain` | 写了 scheme/路径/端口/通配符或非法 DNS 名称 | 只写裸域名，如 `qq.com,my-alias.qq.com` |
+| `IMAP_ADDRESS: only imap.qq.com is supported` | 指向了其他 IMAP 主机 | 固定为 `imap.qq.com:993` |
+| `IMAP_SERVER_NAME: only imap.qq.com is supported` | 改了 TLS 主机名 | 固定为 `imap.qq.com` |
 | `MICROSOFT_REDIRECT_URL: must share the PUBLIC_BASE_URL origin` | 回调与公网地址不同源 | 改为同域名同协议 |
 | `LISTEN_ADDRESS: must be host:port` | 监听地址格式错误 | 如 `:8080` 或 `127.0.0.1:8080` |
 

@@ -19,8 +19,29 @@ QQ 邮箱通过 IMAP over TLS（默认 `imap.qq.com:993`）同步，认证使用
    - 上一步得到的授权码
 5. 服务端会先真实连接 IMAP 验证，成功后才创建账号；失败不会保存任何可用凭据。
 
-## 3. 传输安全要求（CR001）
+## 3. 自定义 QQ 别名域名（CR003）
 
+默认只接受 `@qq.com` 与 `@foxmail.com`。如果你已确认某个别名地址可以走 QQ IMAP
+（例如企业邮箱别名），可通过 `QQ_ALLOWED_DOMAINS` 显式加入白名单：
+
+```dotenv
+QQ_ALLOWED_DOMAINS=qq.com,foxmail.com,my-alias.qq.com
+```
+
+规则：
+
+- 逗号分隔的**裸域名**，自动转小写并去重。
+- 禁止 scheme、路径、端口、userinfo、通配符：`https://qq.com`、`qq.com/path`、
+  `*.qq.com`、`qq.com:993`、`user@qq.com` 都会被拒绝。
+- 必须是至少两段的合法 DNS 名称；`localhost`、`127.0.0.1`、`qq..com`、
+  `-qq.com`、`qq.com.`、`qq.123` 都会被拒绝。
+- 只固定 IMAP 主机 `imap.qq.com`；`IMAP_ADDRESS` / `IMAP_SERVER_NAME`
+  指向其他主机会在启动时报错，不支持任意 IMAP 主机。
+- 白名单只决定“允许尝试哪些地址”；每个别名仍必须通过真实的 QQ TLS 登录验证，
+  认证失败不会保存任何可用账号。
+- 空值表示使用默认 `qq.com,foxmail.com`。
+
+## 4. 传输安全要求（CR001）
 QQ 接入页只接受**安全传输**的请求：
 
 - 直接访问时，请求必须自带 TLS（`Request.TLS != nil`）。
@@ -49,7 +70,7 @@ TRUSTED_PROXY_CIDRS=192.168.50.0/24
 
 切勿把公网任意地址加入该列表。
 
-## 4. 安全说明
+## 5. 安全说明
 
 - 授权链接使用随机 256 位 bearer token，数据库只保存其 SHA-256 哈希。
 - GET 只校验不消费；POST 成功后原子消费，重放无效。
@@ -57,7 +78,7 @@ TRUSTED_PROXY_CIDRS=192.168.50.0/24
 - 授权码与邮箱凭据加密存储，日志与错误信息中不出现明文。
 - 失败认证不会创建可用账号。
 
-## 5. 常见问题
+## 6. 常见问题
 
 | 现象 | 原因 | 处理 |
 |---|---|---|

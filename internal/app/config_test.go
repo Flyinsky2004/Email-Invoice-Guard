@@ -48,6 +48,7 @@ func baseEnv(t *testing.T) {
 	t.Setenv("IMAP_PUBLIC_BASE_URL", "")
 	t.Setenv("IMAP_TIMEOUT", "")
 	t.Setenv("IMAP_SESSION_TTL", "")
+	t.Setenv("QQ_ALLOWED_DOMAINS", "")
 	t.Setenv("TRUSTED_PROXY_CIDRS", "")
 	t.Setenv("ALLOW_INSECURE_HTTP", "")
 }
@@ -81,6 +82,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.IMAP.Address != "imap.qq.com:993" || cfg.IMAP.PublicBaseURL != cfg.PublicBaseURL {
 		t.Fatalf("imap defaults: %+v", cfg.IMAP)
+	}
+	if len(cfg.IMAP.AllowedDomains) != 2 || cfg.IMAP.AllowedDomains[0] != "qq.com" || cfg.IMAP.AllowedDomains[1] != "foxmail.com" {
+		t.Fatalf("allowed domains: %v", cfg.IMAP.AllowedDomains)
 	}
 	if cfg.Microsoft.ClientID != "" || cfg.Microsoft.RedirectURL != "" {
 		t.Fatalf("microsoft must be disabled without a client id: %+v", cfg.Microsoft)
@@ -293,6 +297,68 @@ func TestLoadConfigRejectsBadIMAPAddress(t *testing.T) {
 	t.Setenv("IMAP_ADDRESS", "imap.qq.com")
 	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "IMAP_ADDRESS") {
 		t.Fatalf("want IMAP_ADDRESS error, got %v", err)
+	}
+}
+
+func TestLoadConfigPinsQQIMAPHost(t *testing.T) {
+	t.Run("address host", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("IMAP_ADDRESS", "imap.example.com:993")
+		if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "only imap.qq.com") {
+			t.Fatalf("want pinned host error, got %v", err)
+		}
+	})
+	t.Run("server name", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("IMAP_SERVER_NAME", "imap.example.com")
+		if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "IMAP_SERVER_NAME") {
+			t.Fatalf("want IMAP_SERVER_NAME error, got %v", err)
+		}
+	})
+}
+
+func TestLoadConfigQQAllowedDomains(t *testing.T) {
+	t.Run("custom list is lowercased and deduped", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("QQ_ALLOWED_DOMAINS", "QQ.com, foxmail.com ,my-alias.qq.com,qq.com")
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		want := []string{"qq.com", "foxmail.com", "my-alias.qq.com"}
+		if len(cfg.IMAP.AllowedDomains) != len(want) {
+			t.Fatalf("allowed domains: %v", cfg.IMAP.AllowedDomains)
+		}
+		for i := range want {
+			if cfg.IMAP.AllowedDomains[i] != want[i] {
+				t.Fatalf("allowed domains: %v", cfg.IMAP.AllowedDomains)
+			}
+		}
+	})
+
+	t.Run("empty keeps defaults", func(t *testing.T) {
+		baseEnv(t)
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if len(cfg.IMAP.AllowedDomains) != 2 || cfg.IMAP.AllowedDomains[0] != "qq.com" {
+			t.Fatalf("allowed domains: %v", cfg.IMAP.AllowedDomains)
+		}
+	})
+
+	for _, bad := range []string{
+		"https://qq.com", "qq.com/path", "*.qq.com", "qq.com:993",
+		"user@qq.com", "localhost", "qq..com", "-qq.com", "qq.com.",
+		"127.0.0.1", "qq.123",
+	} {
+		t.Run("reject "+bad, func(t *testing.T) {
+			baseEnv(t)
+			t.Setenv("QQ_ALLOWED_DOMAINS", bad)
+			if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "QQ_ALLOWED_DOMAINS") {
+				t.Fatalf("want QQ_ALLOWED_DOMAINS error, got %v", err)
+			}
+		})
 	}
 }
 

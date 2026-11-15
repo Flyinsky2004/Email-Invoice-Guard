@@ -61,8 +61,16 @@ func validateRuntimeConfig(cfg core.Config) error {
 		add(errors.New("PUBLIC_BASE_URL must be an absolute URL"))
 	}
 	if cfg.IMAP.Address != "" {
-		add(validateHostPort("IMAP_ADDRESS", cfg.IMAP.Address))
+		if err := validateHostPort("IMAP_ADDRESS", cfg.IMAP.Address); err != nil {
+			add(err)
+		} else if host, _, _ := net.SplitHostPort(cfg.IMAP.Address); !strings.EqualFold(host, defaultIMAPServer) {
+			add(fmt.Errorf("IMAP_ADDRESS: only %s is supported", defaultIMAPServer))
+		}
 	}
+	if cfg.IMAP.ServerName != "" && !strings.EqualFold(strings.TrimSpace(cfg.IMAP.ServerName), defaultIMAPServer) {
+		add(fmt.Errorf("IMAP_SERVER_NAME: only %s is supported", defaultIMAPServer))
+	}
+	add(validateDomainList("QQ_ALLOWED_DOMAINS", cfg.IMAP.AllowedDomains))
 	if _, err := parseCIDRList("TRUSTED_PROXY_CIDRS", strings.Join(cfg.IMAP.TrustedProxyCIDRs, ",")); err != nil {
 		add(err)
 	}

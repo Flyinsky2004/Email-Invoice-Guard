@@ -53,6 +53,9 @@ func TestValidateRuntimeConfigRejectsMissingPieces(t *testing.T) {
 		{"allowed", func(c *core.Config) { c.Telegram.AllowedUserIDs = nil }, "TELEGRAM_ALLOWED_USER_IDS"},
 		{"public url", func(c *core.Config) { c.PublicBaseURL = "not a url" }, "PUBLIC_BASE_URL"},
 		{"imap", func(c *core.Config) { c.IMAP.Address = "imap.qq.com" }, "IMAP_ADDRESS"},
+		{"imap host", func(c *core.Config) { c.IMAP.Address = "imap.example.com:993" }, "only imap.qq.com"},
+		{"imap server", func(c *core.Config) { c.IMAP.ServerName = "imap.example.com" }, "IMAP_SERVER_NAME"},
+		{"allowed domain", func(c *core.Config) { c.IMAP.AllowedDomains = []string{"*.qq.com"} }, "QQ_ALLOWED_DOMAINS"},
 		{"proxy", func(c *core.Config) { c.IMAP.TrustedProxyCIDRs = []string{"0.0.0.0/0"} }, "TRUSTED_PROXY_CIDRS"},
 	}
 	for _, c := range cases {
