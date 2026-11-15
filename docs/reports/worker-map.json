@@ -167,5 +167,18 @@
     "agent_stopped": true,
     "worktree_removed": true,
     "branch_removed": true
+  },
+  {
+    "task": "T14",
+    "branch": "task/T14-telegram-bilingual",
+    "worktree": "/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t14",
+    "terminal": "t108",
+    "name": "eig-t14",
+    "launched_at": "2026-11-15T15:47:00+00:00",
+    "spec": "docs/tasks/T14.md",
+    "status": "merged",
+    "agent_stopped": true,
+    "worktree_removed": true,
+    "branch_removed": true
   }
 ]
