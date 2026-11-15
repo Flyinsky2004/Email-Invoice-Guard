@@ -30,7 +30,7 @@ func (b *Bot) commandSettings(ctx context.Context, args []string, userID int64) 
 	case "folder":
 		return b.setFolder(ctx, args[1:], userID)
 	default:
-		return reply{parts: []string{"Usage: /settings [timezone <tz> | reminder <HH:MM> | sync <seconds> | folder <accountID> <folderID> on|off]"}}, nil
+		return reply{parts: []string{"Usage: /settings [timezone <tz> | reminder <HH:MM> | sync <seconds> | folder <accountID> [<folderID> on|off]]"}}, nil
 	}
 }
 
@@ -53,7 +53,7 @@ func (b *Bot) showSettings(ctx context.Context) (reply, error) {
 		"timezone: " + firstNonEmpty(timezone, "UTC"),
 		"reminder_time: " + firstNonEmpty(reminder, "09:00"),
 		fmt.Sprintf("sync_interval_seconds: %d", interval),
-		"folder: /settings folder <accountID> <folderID> on|off",
+		"folder: /settings folder <accountID> [<folderID> on|off]",
 	}
 	return renderList("Settings", lines, nil), nil
 }
@@ -101,21 +101,50 @@ func (b *Bot) setSyncInterval(ctx context.Context, args []string) (reply, error)
 }
 
 func (b *Bot) setFolder(ctx context.Context, args []string, userID int64) (reply, error) {
-	if len(args) != 3 {
-		return reply{parts: []string{"Usage: /settings folder <accountID> <folderID> on|off"}}, nil
+	if len(args) == 0 {
+		return reply{parts: []string{"Usage: /settings folder <accountID> [<folderID> on|off]"}}, nil
 	}
-	accountID, folderID, state := args[0], args[1], strings.ToLower(args[2])
-	if state != "on" && state != "off" {
-		return reply{parts: []string{"Folder state must be on or off."}}, nil
-	}
-	account, err := b.store.GetAccount(ctx, accountID)
+	account, err := b.store.GetAccount(ctx, args[0])
 	if err != nil {
 		return reply{parts: []string{"Account not found."}}, nil
 	}
 	if account.OwnerUserID != userID {
 		return reply{parts: []string{"Account not found."}}, nil
 	}
-	folders, err := b.store.ListFolders(ctx, accountID)
+
+	if len(args) == 1 {
+		folders, err := b.store.ListFolders(ctx, args[0])
+		if err != nil {
+			return reply{}, fmt.Errorf("list folders: %w", err)
+		}
+		if len(folders) == 0 {
+			return reply{parts: []string{
+				"No folders stored for " + escape(account.Address) + ". Run /sync first to discover folders.",
+			}}, nil
+		}
+		lines := make([]string, 0, len(folders))
+		for _, folder := range folders {
+			state := "disabled"
+			if folder.Enabled {
+				state = "enabled"
+			}
+			name := folder.Name
+			if name == "" {
+				name = folder.Role
+			}
+			lines = append(lines, fmt.Sprintf("• %s id=%s (%s)", name, folder.ID, state))
+		}
+		return renderList("Folders for "+account.Address, lines, nil), nil
+	}
+
+	if len(args) != 3 {
+		return reply{parts: []string{"Usage: /settings folder <accountID> [<folderID> on|off]"}}, nil
+	}
+	folderID, state := args[1], strings.ToLower(args[2])
+	if state != "on" && state != "off" {
+		return reply{parts: []string{"Folder state must be on or off."}}, nil
+	}
+	folders, err := b.store.ListFolders(ctx, args[0])
 	if err != nil {
 		return reply{}, fmt.Errorf("list folders: %w", err)
 	}

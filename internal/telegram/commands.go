@@ -113,7 +113,9 @@ const helpText = `<b>Invoice Guard commands</b>
 /assets [provider] - list tracked assets
 /providers - supported sources and parsers
 /status - system counters
-/settings - show or update settings`
+/settings - show or update settings
+/settings folder &lt;accountID&gt; - list folders for an account
+/settings folder &lt;accountID&gt; &lt;folderID&gt; on|off - enable or disable a folder`
 
 func (b *Bot) commandAdd(ctx context.Context, args []string, userID int64) (reply, error) {
 	if len(args) == 0 {
