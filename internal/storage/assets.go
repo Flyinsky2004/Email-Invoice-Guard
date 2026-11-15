@@ -121,29 +121,43 @@ func (r *repo) getAsset(ctx context.Context, id string) (core.Asset, error) {
 	return a, nil
 }
 
-// mergeAsset widens known service periods and fills descriptive fields without
-// discarding newer information.
+// mergeAsset keeps one consistent most-recent billing period. When the incoming
+// observation ends at or after the current period it replaces start, end and
+// LastInvoiceID as a pair (never a historical min/max span). An older invoice
+// replay may only fill still-unknown descriptive fields; it must not overwrite
+// the latest period, model, OS or last invoice.
 func mergeAsset(cur *core.Asset, next core.Asset) {
-	if next.ProductModel != nil {
+	newer := next.LastKnownServiceEnd != nil &&
+		(cur.LastKnownServiceEnd == nil || *next.LastKnownServiceEnd >= *cur.LastKnownServiceEnd)
+	if newer {
+		cur.LastKnownServiceStart = next.LastKnownServiceStart
+		cur.LastKnownServiceEnd = next.LastKnownServiceEnd
+		cur.LastInvoiceID = next.LastInvoiceID
+		if next.ProductModel != nil {
+			cur.ProductModel = next.ProductModel
+		}
+		if next.OperatingSystem != nil {
+			cur.OperatingSystem = next.OperatingSystem
+		}
+		if next.Hostname != nil {
+			cur.Hostname = next.Hostname
+		}
+		if next.ProductID != nil {
+			cur.ProductID = next.ProductID
+		}
+		return
+	}
+	if cur.ProductModel == nil && next.ProductModel != nil {
 		cur.ProductModel = next.ProductModel
 	}
-	if next.OperatingSystem != nil {
+	if cur.OperatingSystem == nil && next.OperatingSystem != nil {
 		cur.OperatingSystem = next.OperatingSystem
 	}
-	if next.Hostname != nil {
+	if cur.Hostname == nil && next.Hostname != nil {
 		cur.Hostname = next.Hostname
 	}
-	if next.ProductID != nil {
+	if cur.ProductID == nil && next.ProductID != nil {
 		cur.ProductID = next.ProductID
-	}
-	if next.LastKnownServiceStart != nil && (cur.LastKnownServiceStart == nil || *next.LastKnownServiceStart < *cur.LastKnownServiceStart) {
-		cur.LastKnownServiceStart = next.LastKnownServiceStart
-	}
-	if next.LastKnownServiceEnd != nil && (cur.LastKnownServiceEnd == nil || *next.LastKnownServiceEnd > *cur.LastKnownServiceEnd) {
-		cur.LastKnownServiceEnd = next.LastKnownServiceEnd
-	}
-	if next.LastInvoiceID != nil {
-		cur.LastInvoiceID = next.LastInvoiceID
 	}
 }
 

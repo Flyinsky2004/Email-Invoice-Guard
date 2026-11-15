@@ -31,7 +31,7 @@ func TestAssetUpsertMergesByExplicitIdentity(t *testing.T) {
 	second := core.Asset{
 		ProviderID: "rfchost", AccountID: "acc-asset",
 		Hostname: strPtr("node-1.rfchost.example"), ProductModel: strPtr("VPS-2"),
-		LastKnownServiceStart: datePtrValue("2026-09-15"),
+		LastKnownServiceStart: datePtrValue("2026-11-01"),
 		LastKnownServiceEnd:   datePtrValue("2026-11-30"),
 	}
 	merged, err := s.SaveAsset(ctx, second)
@@ -44,11 +44,13 @@ func TestAssetUpsertMergesByExplicitIdentity(t *testing.T) {
 	if merged.ProductModel == nil || *merged.ProductModel != "VPS-2" {
 		t.Fatalf("model not updated: %+v", merged.ProductModel)
 	}
-	if merged.LastKnownServiceStart == nil || *merged.LastKnownServiceStart != "2026-09-15" {
-		t.Fatalf("start not widened: %+v", merged.LastKnownServiceStart)
+	// The newer observation replaces the period as a pair; it is not a
+	// historical min/max span.
+	if merged.LastKnownServiceStart == nil || *merged.LastKnownServiceStart != "2026-11-01" {
+		t.Fatalf("start not paired with newer period: %+v", merged.LastKnownServiceStart)
 	}
 	if merged.LastKnownServiceEnd == nil || *merged.LastKnownServiceEnd != "2026-11-30" {
-		t.Fatalf("end not widened: %+v", merged.LastKnownServiceEnd)
+		t.Fatalf("end not updated: %+v", merged.LastKnownServiceEnd)
 	}
 	assets, err := s.ListAssets(ctx, core.AssetFilter{AccountID: "acc-asset"})
 	if err != nil {
@@ -56,6 +58,100 @@ func TestAssetUpsertMergesByExplicitIdentity(t *testing.T) {
 	}
 	if len(assets) != 1 {
 		t.Fatalf("assets = %d, want 1", len(assets))
+	}
+}
+
+func TestAssetRenewalKeepsLatestPeriodAndOlderReplayCannotOverwrite(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mustAccount(t, s, "acc-renew", core.Microsoft, "renew@example.com")
+
+	october := sampleInvoice("acc-renew", "INV-OCT")
+	octSaved := mustInvoice(t, s, october)
+	november := sampleInvoice("acc-renew", "INV-NOV")
+	november.CreatedDate = datePtrValue("2026-11-01")
+	november.DueDate = "2026-11-24"
+	novSaved := mustInvoice(t, s, november)
+	september := sampleInvoice("acc-renew", "INV-SEP")
+	september.CreatedDate = datePtrValue("2026-09-01")
+	september.DueDate = "2026-09-24"
+	sepSaved := mustInvoice(t, s, september)
+
+	host := strPtr("renew.example")
+	asset, err := s.SaveAsset(ctx, core.Asset{
+		ProviderID: "rfchost", AccountID: "acc-renew", Hostname: host,
+		ProductModel: strPtr("VPS-1"), OperatingSystem: strPtr("Debian 12"),
+		LastKnownServiceStart: datePtrValue("2026-10-01"),
+		LastKnownServiceEnd:   datePtrValue("2026-10-31"),
+		LastInvoiceID:         &octSaved.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LinkAssetInvoice(ctx, asset.ID, octSaved.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Renewal: the November period replaces October as a consistent pair.
+	renewed, err := s.SaveAsset(ctx, core.Asset{
+		ProviderID: "rfchost", AccountID: "acc-renew", Hostname: host,
+		ProductModel: strPtr("VPS-2"), OperatingSystem: strPtr("Debian 13"),
+		LastKnownServiceStart: datePtrValue("2026-11-01"),
+		LastKnownServiceEnd:   datePtrValue("2026-11-30"),
+		LastInvoiceID:         &novSaved.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LinkAssetInvoice(ctx, renewed.ID, novSaved.ID); err != nil {
+		t.Fatal(err)
+	}
+	if renewed.ID != asset.ID {
+		t.Fatalf("renewal created a new asset: %s vs %s", renewed.ID, asset.ID)
+	}
+	if renewed.LastKnownServiceStart == nil || *renewed.LastKnownServiceStart != "2026-11-01" ||
+		renewed.LastKnownServiceEnd == nil || *renewed.LastKnownServiceEnd != "2026-11-30" {
+		t.Fatalf("renewal period = %v..%v", renewed.LastKnownServiceStart, renewed.LastKnownServiceEnd)
+	}
+	if renewed.ProductModel == nil || *renewed.ProductModel != "VPS-2" ||
+		renewed.OperatingSystem == nil || *renewed.OperatingSystem != "Debian 13" {
+		t.Fatalf("renewal descriptors = %+v %+v", renewed.ProductModel, renewed.OperatingSystem)
+	}
+	if renewed.LastInvoiceID == nil || *renewed.LastInvoiceID != novSaved.ID {
+		t.Fatalf("last invoice = %+v, want %s", renewed.LastInvoiceID, novSaved.ID)
+	}
+
+	// Replaying the older September invoice must not roll the asset back.
+	replayed, err := s.SaveAsset(ctx, core.Asset{
+		ProviderID: "rfchost", AccountID: "acc-renew", Hostname: host,
+		ProductModel: strPtr("OLD-MODEL"), OperatingSystem: strPtr("OldOS"),
+		LastKnownServiceStart: datePtrValue("2026-09-01"),
+		LastKnownServiceEnd:   datePtrValue("2026-09-30"),
+		LastInvoiceID:         &sepSaved.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LinkAssetInvoice(ctx, replayed.ID, sepSaved.ID); err != nil {
+		t.Fatal(err)
+	}
+	if replayed.LastKnownServiceStart == nil || *replayed.LastKnownServiceStart != "2026-11-01" ||
+		replayed.LastKnownServiceEnd == nil || *replayed.LastKnownServiceEnd != "2026-11-30" {
+		t.Fatalf("older replay changed period: %v..%v", replayed.LastKnownServiceStart, replayed.LastKnownServiceEnd)
+	}
+	if replayed.ProductModel == nil || *replayed.ProductModel != "VPS-2" ||
+		replayed.OperatingSystem == nil || *replayed.OperatingSystem != "Debian 13" {
+		t.Fatalf("older replay overwrote descriptors: %+v %+v", replayed.ProductModel, replayed.OperatingSystem)
+	}
+	if replayed.LastInvoiceID == nil || *replayed.LastInvoiceID != novSaved.ID {
+		t.Fatalf("older replay overwrote last invoice: %+v", replayed.LastInvoiceID)
+	}
+	invoices, err := s.AssetInvoices(ctx, asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invoices) != 3 {
+		t.Fatalf("asset invoices = %d, want 3", len(invoices))
 	}
 }
 
