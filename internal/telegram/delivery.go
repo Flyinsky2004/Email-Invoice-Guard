@@ -69,6 +69,14 @@ func (b *Bot) deliver(ctx context.Context, delivery *core.Delivery) {
 				return
 			}
 		}
+		// A manual summary is rendered from live state, but a payment confirmed
+		// while this job waited for the rate limit must not produce a stale
+		// summary either. Recheck immediately before each part.
+		if delivery.Payload.Kind == "manual" {
+			if !b.manualDeliveryFresh(ctx, delivery) {
+				return
+			}
+		}
 		var kb *inlineKeyboard
 		if i == lastPart {
 			kb = markup
@@ -283,4 +291,43 @@ func (b *Bot) skipDelivery(ctx context.Context, delivery *core.Delivery, reason 
 		b.log.Error("telegram: persist delivery skip failed", "outbox", delivery.ID, "error", err.Error())
 	}
 	b.log.Warn("telegram: delivery skipped", "outbox", delivery.ID, "reason", reason)
+}
+
+// manualDeliveryFresh re-reads the plan and its occurrences immediately before
+// a send. It returns false after persisting a skip or failure, so the caller
+// must stop. A paused/cancelled plan or a summary whose occurrences are all
+// confirmed is stale and must not be delivered.
+func (b *Bot) manualDeliveryFresh(ctx context.Context, delivery *core.Delivery) bool {
+	if b.manual == nil {
+		b.skipDelivery(ctx, delivery, "manual reminders are disabled before send")
+		return false
+	}
+	plan, err := b.manual.GetPlan(ctx, delivery.Payload.ManualPlanID)
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			b.skipDelivery(ctx, delivery, "manual plan disappeared before send")
+		} else {
+			b.failDelivery(ctx, delivery, false, "manual plan recheck: "+sanitizeReason(err))
+		}
+		return false
+	}
+	if plan.Status != core.ManualPlanActive {
+		b.skipDelivery(ctx, delivery, "manual plan is not active before send")
+		return false
+	}
+	for _, id := range delivery.Payload.ManualOccurrenceIDs {
+		occ, err := b.manual.GetOccurrence(ctx, id)
+		if err != nil {
+			if errors.Is(err, core.ErrNotFound) {
+				continue
+			}
+			b.failDelivery(ctx, delivery, false, "manual occurrence recheck: "+sanitizeReason(err))
+			return false
+		}
+		if occ.Status == core.ManualOccurrencePending {
+			return true
+		}
+	}
+	b.skipDelivery(ctx, delivery, "manual summary became stale before send")
+	return false
 }

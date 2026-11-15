@@ -324,3 +324,66 @@ func sentTexts(calls []tgCall) []string {
 	}
 	return out
 }
+
+func TestManualSummaryRechecksBeforeSend(t *testing.T) {
+	env := newTestEnv(t)
+	rec := &deliveryRecorder{}
+	rec.install(env.store)
+	plan := sampleManualPlan()
+	occ := sampleManualOccurrence(core.ManualOccurrencePending)
+	reads := 0
+	m := newFakeManual()
+	m.getPlan = func(context.Context, string) (core.ManualPlan, error) { return plan, nil }
+	m.getOccurrence = func(context.Context, string) (core.ManualOccurrence, error) {
+		reads++
+		if reads == 1 {
+			return occ, nil // render sees a pending occurrence
+		}
+		paid := occ
+		paid.Status = core.ManualOccurrencePaid // confirmed while waiting to send
+		return paid, nil
+	}
+	env.manualDelivery(m, plan, []core.ManualOccurrence{occ})
+
+	handled, err := env.bot.DeliverOnce(context.Background())
+	if err != nil || !handled {
+		t.Fatalf("DeliverOnce = %v, %v", handled, err)
+	}
+	if calls := env.tg.callsFor("sendMessage"); len(calls) != 0 {
+		t.Fatalf("stale summary was sent: %d calls", len(calls))
+	}
+	_, _, _, _, skipped := rec.snapshot()
+	if len(skipped) != 1 {
+		t.Fatalf("skipped deliveries = %d, want 1", len(skipped))
+	}
+}
+
+func TestManualSummarySkipsWhenPlanPausedBeforeSend(t *testing.T) {
+	env := newTestEnv(t)
+	rec := &deliveryRecorder{}
+	rec.install(env.store)
+	plan := sampleManualPlan()
+	occ := sampleManualOccurrence(core.ManualOccurrencePending)
+	reads := 0
+	m := newFakeManual()
+	m.getPlan = func(context.Context, string) (core.ManualPlan, error) {
+		reads++
+		if reads > 1 {
+			plan.Status = core.ManualPlanPaused
+		}
+		return plan, nil
+	}
+	m.getOccurrence = func(context.Context, string) (core.ManualOccurrence, error) { return occ, nil }
+	env.manualDelivery(m, plan, []core.ManualOccurrence{occ})
+
+	handled, err := env.bot.DeliverOnce(context.Background())
+	if err != nil || !handled {
+		t.Fatalf("DeliverOnce = %v, %v", handled, err)
+	}
+	if calls := env.tg.callsFor("sendMessage"); len(calls) != 0 {
+		t.Fatalf("paused plan summary was sent: %d calls", len(calls))
+	}
+	if _, _, _, _, skipped := rec.snapshot(); len(skipped) != 1 {
+		t.Fatalf("skipped deliveries = %d, want 1", len(skipped))
+	}
+}

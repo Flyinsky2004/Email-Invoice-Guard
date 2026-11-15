@@ -309,3 +309,9 @@
 - 修复 commit：待定位（本次 T12 修复提交）。
 - Done right: `mp` 只显示确认提示（Confirm=`mc`、Cancel=`mv`），`mc` 才调用 `ConfirmOccurrence`；只用 `core.ManualReminderService` 与 `core.Store` 的冻结方法；向导含 period（仅 monthly）与 asset（`ListAssets(Limit:0)` + Skip）步骤。
 - Seen 1× (2026-11-15).
+
+**手动提醒摘要与邮件提醒一样，必须在每次发送前重新读取计划与 occurrence 状态。**
+- T12 合入后（fb50306）仅在渲染阶段过滤已支付 occurrence；若用户在限流等待或分片发送期间确认支付/暂停计划，仍会发出过期摘要。评审发现。
+- 修复 commit：本次 orchestrator 修复提交（manualDeliveryFresh 在每片发送前重读 plan 与 payload 中的 occurrence）。
+- Done right: TestManualSummaryRechecksBeforeSend / TestManualSummarySkipsWhenPlanPausedBeforeSend 断言 sendMessage 为 0 且 delivery 被 SKIPPED。
+- Seen 1× (2026-11-15).
