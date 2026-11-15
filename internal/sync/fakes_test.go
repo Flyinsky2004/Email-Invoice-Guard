@@ -28,6 +28,7 @@ type memState struct {
 	invoiceKeys  map[string]string
 	deliveries   map[string]core.Delivery
 	failures     []parseFailure
+	reminders    []core.InvoiceReminder
 	settings     map[string]string
 }
 
@@ -76,6 +77,7 @@ func (s *memState) clone() *memState {
 		c.deliveries[k] = v
 	}
 	c.failures = append([]parseFailure(nil), s.failures...)
+	c.reminders = append([]core.InvoiceReminder(nil), s.reminders...)
 	for k, v := range s.settings {
 		c.settings[k] = v
 	}
@@ -281,6 +283,11 @@ func (r *txRepo) Enqueue(ctx context.Context, delivery core.Delivery) (bool, err
 	return true, nil
 }
 
+func (r *txRepo) CreateReminder(ctx context.Context, reminder core.InvoiceReminder, delivery core.Delivery) (bool, error) {
+	r.st.reminders = append(r.st.reminders, reminder)
+	return true, nil
+}
+
 func (r *txRepo) SaveCursor(ctx context.Context, cursor core.SyncCursor) error {
 	if r.failSaveCursor {
 		return errors.New("injected cursor failure")
@@ -311,6 +318,12 @@ func (f *fakeStore) failuresList() []parseFailure {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]parseFailure(nil), f.st.failures...)
+}
+
+func (f *fakeStore) reminderCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.st.reminders)
 }
 
 func (f *fakeStore) emailByProviderID(providerID string) (core.NormalizedEmail, bool) {

@@ -749,6 +749,120 @@ func TestReviewInvoiceSkipsAssetLinker(t *testing.T) {
 	}
 }
 
+func TestDecodeErrorForcesReviewAndSkipsAssets(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	email := testEmail("m-1", testNow, "invoice", "residual decoded body")
+	email.Headers = map[string][]string{"x-invoice-guard-decode-error": {"mime-decode-failed"}}
+	source := singlePageSource(email)
+	parser := &fakeParser{fn: func(ctx context.Context, email core.NormalizedEmail) (*core.Invoice, error) {
+		return &core.Invoice{
+			ProviderID: "rfchost",
+			Number:     "INV-1",
+			DueDate:    "2026-11-20",
+			AmountDue:  core.Money{Minor: 684, Currency: "USD"},
+		}, nil
+	}}
+	linker := &fakeLinker{}
+	engine := newTestEngine(t, store, source, parser, linker)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	invoice, ok := store.invoiceByNumber("INV-1")
+	if !ok || invoice.Status != core.ReviewRequired {
+		t.Fatalf("damaged MIME invoice was not forced to review: %+v", invoice)
+	}
+	if len(invoice.ReviewReasons) == 0 {
+		t.Fatal("review reasons missing")
+	}
+	if linker.calls != 0 {
+		t.Fatalf("review invoice updated assets: linker calls = %d", linker.calls)
+	}
+	if store.reminderCount() != 0 {
+		t.Fatalf("review invoice created reminders: %d", store.reminderCount())
+	}
+
+	saved, _ := store.emailByProviderID("m-1")
+	if !strings.Contains(saved.TextBody, "residual decoded body") {
+		t.Fatalf("residual body lost: %q", saved.TextBody)
+	}
+	delivery, ok := store.deliveryForEmail(saved.InternalEmailID)
+	if !ok || delivery.Payload.Kind != deliveryKindInvoice {
+		t.Fatalf("unexpected delivery %+v", delivery.Payload)
+	}
+	failures := store.failuresList()
+	if len(failures) != 1 {
+		t.Fatalf("failures = %+v", failures)
+	}
+	if failures[0].EmailID != saved.InternalEmailID || failures[0].ProviderID != "rfchost" {
+		t.Fatalf("failure identity = %+v", failures[0])
+	}
+	if !strings.Contains(failures[0].Reason, "mime_decode_error") {
+		t.Fatalf("failure reason = %q", failures[0].Reason)
+	}
+}
+
+func TestDecodeErrorOrdinaryMailStillDelivered(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	body := strings.Repeat("ordinary full body ", 999) + "end"
+	email := testEmail("m-1", testNow, "hello", body)
+	email.Headers = map[string][]string{"X-Invoice-Guard-Decode-Error": {"read-failed"}}
+	source := singlePageSource(email)
+	linker := &fakeLinker{}
+	engine := newTestEngine(t, store, source, &fakeParser{}, linker)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	saved, _ := store.emailByProviderID("m-1")
+	if saved.TextBody != body {
+		t.Fatalf("ordinary body changed or truncated: got %d bytes, want %d", len(saved.TextBody), len(body))
+	}
+	delivery, ok := store.deliveryForEmail(saved.InternalEmailID)
+	if !ok || delivery.Payload.Kind != deliveryKindEmail {
+		t.Fatalf("ordinary mail not delivered: %+v", delivery.Payload)
+	}
+	if store.invoiceCount() != 0 || linker.calls != 0 || store.reminderCount() != 0 {
+		t.Fatalf("ordinary mail created billing work: invoices=%d linker=%d reminders=%d",
+			store.invoiceCount(), linker.calls, store.reminderCount())
+	}
+	if failures := store.failuresList(); len(failures) != 0 {
+		t.Fatalf("ordinary mail recorded parse failure: %+v", failures)
+	}
+}
+
+func TestNoDecodeWarningKeepsInvoicePending(t *testing.T) {
+	store := newFakeStore()
+	addAccount(store, "acc", true)
+	source := singlePageSource(testEmail("m-1", testNow, "invoice", "clean body"))
+	parser := &fakeParser{fn: func(ctx context.Context, email core.NormalizedEmail) (*core.Invoice, error) {
+		return &core.Invoice{
+			ProviderID: "rfchost",
+			Number:     "INV-1",
+			DueDate:    "2026-11-20",
+			AmountDue:  core.Money{Minor: 684, Currency: "USD"},
+		}, nil
+	}}
+	linker := &fakeLinker{}
+	engine := newTestEngine(t, store, source, parser, linker)
+
+	if err := engine.SyncAccount(context.Background(), "acc"); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	invoice, ok := store.invoiceByNumber("INV-1")
+	if !ok || invoice.Status != core.PendingConfirmation {
+		t.Fatalf("clean invoice status = %+v", invoice)
+	}
+	if linker.calls != 1 {
+		t.Fatalf("clean invoice did not update assets: linker calls = %d", linker.calls)
+	}
+	if failures := store.failuresList(); len(failures) != 0 {
+		t.Fatalf("clean mail recorded parse failure: %+v", failures)
+	}
+}
+
 func TestBaselineAtChangeRebuildsBaseline(t *testing.T) {
 	store := newFakeStore()
 	addAccount(store, "acc", true)
