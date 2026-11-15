@@ -28,3 +28,7 @@ Session token is random 256-bit bearer; only hash as primary key. Session payloa
 Per-part delivery extension (v1 frozen before dispatch): RecordTelegramMessage(ctx,message) persists each acknowledged part immediately; DeliveryMessages(ctx,outboxID) retrieves parts so retries skip known successful sends. CompleteDelivery accepts retained+new part IDs and idempotently UPSERTs. ListTelegramMessages(ctx,invoiceID) retrieves invoice messages for editing. EmailRepository.RecordParseFailure(ctx,emailID,providerID,reason) records failures in same transaction as saved mail; reason must be bounded sanitized diagnostics.
 
 Dynamic settings keys: timezone, reminder_time, sync_interval_seconds. Scheduler reads timezone/reminder_time on each Tick (fallback cfg when ErrNotFound), pipeline Run may read sync interval between passes; Telegram validates before SetSetting. Folder setting syntax /settings folder <accountID> <folderID> on|off uses SaveFolder after locating owned account.
+
+## Approved change CR001 (orchestrator, before integration)
+
+IMAPConfig.TrustedProxyCIDRs []string authorizes exact proxy network peers to assert X-Forwarded-Proto:https for QQ setup. Default empty means Request.TLS is mandatory. Parse RemoteAddr IP and verify CIDR membership; never trust forwarded headers from arbitrary peers. T08 loads TRUSTED_PROXY_CIDRS (comma-separated validated CIDRs), documents isolated Caddy network/subnet and direct HTTP rejection. T02 checks this field; configured PublicBaseURL HTTPS alone never proves transport security. No other public APIs changed.

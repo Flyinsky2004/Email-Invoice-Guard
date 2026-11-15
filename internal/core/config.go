@@ -23,6 +23,8 @@ type MicrosoftConfig struct {
 	SessionTTL                                                              time.Duration
 }
 type IMAPConfig struct {
+	TrustedProxyCIDRs []string // Only these remote peers may assert X-Forwarded-Proto: https.
+
 	Address, ServerName, PublicBaseURL string
 	Timeout, SessionTTL                time.Duration
 }
