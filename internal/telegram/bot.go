@@ -38,6 +38,10 @@ type Bot struct {
 
 	mu    sync.Mutex
 	delay time.Duration
+
+	syncMu      sync.Mutex
+	syncRunning bool
+	syncWG      sync.WaitGroup
 }
 
 // New constructs a Bot. The HTTP client is injected for tests; when nil a
@@ -101,13 +105,31 @@ func (b *Bot) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 	case first = <-errs:
-		cancel()
 	}
+	// Stop both loops, then let an in-flight background sync observe the
+	// cancellation and exit before Run returns.
+	cancel()
 	wg.Wait()
+	b.waitBackgroundSync(5 * time.Second)
 	if first != nil && !errors.Is(first, context.Canceled) {
 		return first
 	}
 	return nil
+}
+
+// waitBackgroundSync gives an in-flight /sync goroutine a bounded grace period
+// to observe cancellation before Run returns.
+func (b *Bot) waitBackgroundSync(grace time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		b.syncWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(grace):
+		b.log.Warn("telegram: background sync did not stop within shutdown grace")
+	}
 }
 
 func (b *Bot) pollLoop(ctx context.Context) error {

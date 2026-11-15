@@ -18,7 +18,18 @@ const (
 	maxMessageUnits = 4096
 	// chunkBudget leaves room for the "(i/n)" continuation marker.
 	chunkBudget = maxMessageUnits - 64
+	// displayTimeLayout always carries an explicit zone name and offset.
+	displayTimeLayout = "2006-01-02 15:04 MST -07:00"
 )
+
+// defaultDisplayLocation is the architecture default scheduler zone. Exported
+// formatters use it when the caller has no configured timezone.
+func defaultDisplayLocation() *time.Location {
+	if loc, err := time.LoadLocation("Asia/Taipei"); err == nil {
+		return loc
+	}
+	return time.UTC
+}
 
 func utf16Len(s string) int { return len(utf16.Encode([]rune(s))) }
 
@@ -149,7 +160,16 @@ func splitUnits(s string, budget int) []string {
 // FormatEmail renders a complete email notification. All body text, links and
 // attachment names are included; HTML-only bodies are converted to text
 // locally. Every returned part is valid escaped HTML within the size limit.
+// Times use the default display zone (Asia/Taipei); the Bot uses its dynamic
+// configured zone through formatEmailAt.
 func FormatEmail(email core.NormalizedEmail, account core.MailAccount) []string {
+	return formatEmailAt(email, account, defaultDisplayLocation())
+}
+
+func formatEmailAt(email core.NormalizedEmail, account core.MailAccount, loc *time.Location) []string {
+	if loc == nil {
+		loc = defaultDisplayLocation()
+	}
 	c := newChunker(chunkBudget)
 	c.writeHTML("<b>New mail received</b>")
 	c.writeRaw("Account: " + account.Address)
@@ -165,7 +185,7 @@ func FormatEmail(email core.NormalizedEmail, account core.MailAccount) []string 
 	}
 	c.writeRaw("Vendor: " + vendor + " / " + category)
 	c.writeRaw("Subject: " + email.Subject)
-	c.writeRaw("Time: " + email.ReceivedAt.UTC().Format(time.RFC3339))
+	c.writeRaw("Time: " + email.ReceivedAt.In(loc).Format(displayTimeLayout))
 	c.writeHTML("──────────")
 
 	body := email.TextBody
@@ -202,7 +222,16 @@ func FormatEmail(email core.NormalizedEmail, account core.MailAccount) []string 
 
 // FormatInvoice renders the enhanced invoice notification. It includes every
 // item, price, discount, host and service period plus the manual status note.
+// Times use the default display zone (Asia/Taipei); the Bot uses its dynamic
+// configured zone through formatInvoiceAt.
 func FormatInvoice(inv core.Invoice, account core.MailAccount) []string {
+	return formatInvoiceAt(inv, account, defaultDisplayLocation())
+}
+
+func formatInvoiceAt(inv core.Invoice, account core.MailAccount, loc *time.Location) []string {
+	if loc == nil {
+		loc = defaultDisplayLocation()
+	}
 	c := newChunker(chunkBudget)
 	c.writeHTML("<b>Invoice</b>")
 	c.writeRaw(inv.Number)
@@ -232,6 +261,9 @@ func FormatInvoice(inv core.Invoice, account core.MailAccount) []string {
 	}
 	if inv.PaymentMethod != nil && *inv.PaymentMethod != "" {
 		c.writeRaw("Payment method: " + *inv.PaymentMethod)
+	}
+	if inv.ConfirmedAt != nil {
+		c.writeRaw("Confirmed at: " + inv.ConfirmedAt.In(loc).Format(displayTimeLayout))
 	}
 
 	for i, item := range inv.Items {

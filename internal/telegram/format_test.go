@@ -55,6 +55,7 @@ func TestFormatEmailIncludesAllFields(t *testing.T) {
 	email := sampleEmail()
 	parts := FormatEmail(email, sampleAccount())
 	assertValidParts(t, parts)
+	wantTime := email.ReceivedAt.In(defaultDisplayLocation()).Format(displayTimeLayout)
 	text := joined(parts)
 	for _, want := range []string{
 		"owner@example.com",
@@ -62,7 +63,7 @@ func TestFormatEmailIncludesAllFields(t *testing.T) {
 		"Vendor Billing &lt;billing@example.com&gt;",
 		"RFCHOST / billing",
 		"Your invoice INV-100",
-		"2026-11-15T10:30:00Z",
+		wantTime,
 		"Hello customer,",
 		"your invoice is attached.",
 		"Thank you.",
@@ -173,7 +174,7 @@ func sampleInvoice() core.Invoice {
 		DueDate:       core.Date("2026-11-15"),
 		Currency:      "USD",
 		AmountDue:     amount,
-		URL:           "https://rfchost.com/invoice/1",
+		URL:           "https://my.rfchost.com/viewinvoice.php?id=143058",
 		Status:        core.PendingConfirmation,
 		Items: []core.InvoiceItem{{
 			ID: testID(4), InvoiceID: testID(3),
@@ -237,27 +238,40 @@ func TestInvoiceKeyboardOnlyTrustedURL(t *testing.T) {
 	if kb == nil {
 		t.Fatal("expected keyboard")
 	}
-	var sawURL bool
+	var gotURL string
 	for _, row := range kb.InlineKeyboard {
 		for _, button := range row {
 			if button.URL != "" {
-				sawURL = true
-				if button.URL != invoice.URL {
-					t.Fatalf("unexpected URL button %q", button.URL)
-				}
+				gotURL = button.URL
 			}
 		}
 	}
-	if !sawURL {
-		t.Fatal("trusted merchant URL button missing")
+	const fixture = "https://my.rfchost.com/viewinvoice.php?id=143058"
+	if gotURL != fixture {
+		t.Fatalf("trusted fixture URL button = %q, want %q", gotURL, fixture)
 	}
 
-	invoice.URL = "https://evil.example.com/invoice/1"
-	kb = env.bot.invoiceKeyboard(invoice)
-	for _, row := range kb.InlineKeyboard {
-		for _, button := range row {
-			if button.URL != "" {
-				t.Fatalf("untrusted URL button was attached: %q", button.URL)
+	rejected := []string{
+		"https://rfchost.com/invoice/1",                          // forged host/path
+		"https://my.rfchost.com/viewinvoice.php",                 // missing id
+		"https://my.rfchost.com/viewinvoice.php?id=abc",          // non-numeric id
+		"https://my.rfchost.com/viewinvoice.php?id=1&redirect=x", // extra redirect param
+		"https://my.rfchost.com/viewinvoice.php?id=1&id=2",       // duplicate id
+		"https://my.rfchost.com/other.php?id=1",                  // wrong path
+		"http://my.rfchost.com/viewinvoice.php?id=1",             // not https
+		"https://user@my.rfchost.com/viewinvoice.php?id=1",       // userinfo
+		"https://my.rfchost.com:8443/viewinvoice.php?id=1",       // non-443 port
+		"https://my.rfchost.com/viewinvoice.php?id=1#frag",       // fragment
+		"https://evil.example.com/viewinvoice.php?id=1",          // foreign host
+	}
+	for _, raw := range rejected {
+		invoice.URL = raw
+		kb := env.bot.invoiceKeyboard(invoice)
+		for _, row := range kb.InlineKeyboard {
+			for _, button := range row {
+				if button.URL != "" {
+					t.Fatalf("untrusted URL %q was attached as a button", raw)
+				}
 			}
 		}
 	}
@@ -312,6 +326,25 @@ func TestFormatInvoiceLongUntrustedNumberChunkedSafely(t *testing.T) {
 	}
 	if got, want := strings.Count(text, "A&amp;B&lt;"), 500; got != want {
 		t.Fatalf("invoice number content truncated: got %d, want %d", got, want)
+	}
+}
+
+func TestFormatEmailUsesProvidedLocation(t *testing.T) {
+	email := sampleEmail()
+	text := joined(formatEmailAt(email, sampleAccount(), time.UTC))
+	if !strings.Contains(text, "2026-11-15 10:30 UTC +00:00") {
+		t.Fatalf("UTC rendering missing explicit zone: %s", text)
+	}
+}
+
+func TestFormatInvoiceIncludesConfirmedAtWithTimezone(t *testing.T) {
+	invoice := sampleInvoice()
+	confirmed := time.Date(2026, 11, 15, 10, 30, 0, 0, time.UTC)
+	invoice.ConfirmedAt = &confirmed
+	invoice.Status = core.PaidConfirmed
+	text := joined(formatInvoiceAt(invoice, sampleAccount(), time.UTC))
+	if !strings.Contains(text, "Confirmed at: 2026-11-15 10:30 UTC +00:00") {
+		t.Fatalf("confirmed time missing timezone: %s", text)
 	}
 }
 

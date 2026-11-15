@@ -123,14 +123,43 @@ func TestRemoveCommandRejectsForeignAccount(t *testing.T) {
 func TestSyncCommand(t *testing.T) {
 	env := newTestEnv(t)
 	text := sentText(env.runMessage("/sync"))
-	if !strings.Contains(text, "Sync completed") {
+	if !strings.Contains(text, "Sync started in the background") {
 		t.Fatalf("unexpected reply: %q", text)
 	}
-	env.syncer.mu.Lock()
-	defer env.syncer.mu.Unlock()
-	if env.syncer.calls != 1 {
-		t.Fatalf("SyncAll calls = %d, want 1", env.syncer.calls)
+	waitFor(t, 2*time.Second, func() bool {
+		env.syncer.mu.Lock()
+		defer env.syncer.mu.Unlock()
+		return env.syncer.calls == 1
+	})
+}
+
+func TestSyncCommandRejectsConcurrentRun(t *testing.T) {
+	env := newTestEnv(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	env.syncer.syncAll = func(context.Context) error {
+		close(started)
+		<-release
+		return nil
 	}
+	env.runMessage("/sync")
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background sync did not start")
+	}
+
+	env.tg.reset()
+	text := sentText(env.runMessage("/sync"))
+	if !strings.Contains(text, "already running") {
+		t.Fatalf("concurrent sync was not rejected: %q", text)
+	}
+	close(release)
+	waitFor(t, 2*time.Second, func() bool {
+		env.bot.syncMu.Lock()
+		defer env.bot.syncMu.Unlock()
+		return !env.bot.syncRunning
+	})
 }
 
 func TestLatestAndSearchCommands(t *testing.T) {

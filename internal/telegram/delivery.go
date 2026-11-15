@@ -51,6 +51,24 @@ func (b *Bot) deliver(ctx context.Context, delivery *core.Delivery) {
 			b.failDelivery(ctx, delivery, true, "canceled before send")
 			return
 		}
+		// Re-check the reminder's invoice immediately before each send. A
+		// payment confirmed while this job waited for the rate limit must not
+		// produce a stale reminder.
+		if delivery.Payload.Kind == "reminder" {
+			current, err := b.store.GetInvoice(ctx, delivery.Payload.InvoiceID)
+			if err != nil {
+				if errors.Is(err, core.ErrNotFound) {
+					b.skipDelivery(ctx, delivery, "reminder invoice disappeared before send")
+				} else {
+					b.failDelivery(ctx, delivery, false, "reminder status recheck: "+sanitizeReason(err))
+				}
+				return
+			}
+			if current.Status != core.PendingConfirmation {
+				b.skipDelivery(ctx, delivery, "reminder became stale before send")
+				return
+			}
+		}
 		var kb *inlineKeyboard
 		if i == lastPart {
 			kb = markup
@@ -116,11 +134,11 @@ func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (part
 			return nil, nil, "", false
 		}
 		account := b.deliveryAccount(ctx, inv.AccountID, core.Microsoft)
-		parts := FormatInvoice(inv, account)
+		parts := formatInvoiceAt(inv, account, b.location(ctx))
 		if payload.Kind == "reminder" {
 			// Recompute against the current local date instead of trusting the
 			// scheduling-time payload text.
-			parts = appendEscapedLine(parts, b.reminderNote(inv))
+			parts = appendEscapedLine(parts, b.reminderNote(ctx, inv))
 		}
 		return parts, b.invoiceKeyboard(inv), inv.ID, true
 	}
@@ -131,16 +149,16 @@ func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (part
 		return nil, nil, "", false
 	}
 	account := b.deliveryAccount(ctx, email.AccountID, email.ProviderType)
-	return FormatEmail(email, account), nil, "", true
+	return formatEmailAt(email, account, b.location(ctx)), nil, "", true
 }
 
 // reminderNote renders the due-distance line at delivery time so a reminder
 // queued earlier still reports the correct number of days.
-func (b *Bot) reminderNote(inv core.Invoice) string {
+func (b *Bot) reminderNote(ctx context.Context, inv core.Invoice) string {
 	if inv.DueDate == "" {
 		return "Reminder: due date unknown."
 	}
-	today := core.LocalDate(b.now(), b.location())
+	today := core.LocalDate(b.now(), b.location(ctx))
 	days, err := core.DaysUntil(inv.DueDate, today)
 	if err != nil {
 		return "Reminder: due " + string(inv.DueDate) + "."

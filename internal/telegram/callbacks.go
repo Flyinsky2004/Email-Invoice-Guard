@@ -166,7 +166,7 @@ func (b *Bot) callbackEmail(ctx context.Context, cq *callbackQuery, emailID stri
 	if err != nil {
 		account = core.MailAccount{ID: email.AccountID, Provider: email.ProviderType}
 	}
-	parts := FormatEmail(email, account)
+	parts := formatEmailAt(email, account, b.location(ctx))
 	b.answerCallback(ctx, cq.ID, "Opening mail", false)
 	if err := b.sendParts(ctx, cq.Message.Chat.ID, parts, nil); err != nil {
 		b.log.Warn("telegram: send mail failed", "error", err.Error())
@@ -183,7 +183,7 @@ func (b *Bot) callbackInvoice(ctx context.Context, cq *callbackQuery, invoiceID 
 	if err != nil {
 		account = core.MailAccount{ID: inv.AccountID, Provider: core.Microsoft}
 	}
-	parts := FormatInvoice(inv, account)
+	parts := formatInvoiceAt(inv, account, b.location(ctx))
 	b.answerCallback(ctx, cq.ID, "Opening invoice", false)
 	if err := b.sendParts(ctx, cq.Message.Chat.ID, parts, b.invoiceKeyboard(inv)); err != nil {
 		b.log.Warn("telegram: send invoice failed", "error", err.Error())
@@ -251,7 +251,7 @@ func (b *Bot) updateInvoiceMessages(ctx context.Context, inv core.Invoice) {
 	if err != nil {
 		account = core.MailAccount{ID: inv.AccountID}
 	}
-	parts := FormatInvoice(inv, account)
+	parts := formatInvoiceAt(inv, account, b.location(ctx))
 	markup := b.invoiceKeyboard(inv)
 	for _, msg := range messages {
 		text := parts[0]

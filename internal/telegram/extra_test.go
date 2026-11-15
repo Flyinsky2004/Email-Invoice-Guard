@@ -118,6 +118,39 @@ func TestCallbackMissingSourcesReported(t *testing.T) {
 	}
 }
 
+func TestBotEmailUsesDynamicTimezoneSetting(t *testing.T) {
+	env := newTestEnv(t)
+	if err := env.store.SetSetting(context.Background(), settingTimezone, "UTC"); err != nil {
+		t.Fatal(err)
+	}
+	email := sampleEmail()
+	env.store.getEmail = func(context.Context, string) (core.NormalizedEmail, error) { return email, nil }
+	env.store.getAccount = func(context.Context, string) (core.MailAccount, error) { return sampleAccount(), nil }
+	env.runCallback(callbackData(cbEmail, email.InternalEmailID))
+	text := sentText(env.tg.callsFor("sendMessage"))
+	if !strings.Contains(text, "2026-11-15 10:30 UTC +00:00") {
+		t.Fatalf("dynamic timezone not applied to mail time: %s", text)
+	}
+}
+
+func TestBotInvoiceUsesDynamicTimezoneSetting(t *testing.T) {
+	env := newTestEnv(t)
+	if err := env.store.SetSetting(context.Background(), settingTimezone, "UTC"); err != nil {
+		t.Fatal(err)
+	}
+	invoice := sampleInvoice()
+	confirmed := time.Date(2026, 11, 15, 10, 30, 0, 0, time.UTC)
+	invoice.ConfirmedAt = &confirmed
+	invoice.Status = core.PaidConfirmed
+	env.store.getInvoice = func(context.Context, string) (core.Invoice, error) { return invoice, nil }
+	env.store.getAccount = func(context.Context, string) (core.MailAccount, error) { return sampleAccount(), nil }
+	env.runCallback(callbackData(cbInvoice, invoice.ID))
+	text := sentText(env.tg.callsFor("sendMessage"))
+	if !strings.Contains(text, "Confirmed at: 2026-11-15 10:30 UTC +00:00") {
+		t.Fatalf("dynamic timezone not applied to confirmed time: %s", text)
+	}
+}
+
 func TestCommandUsageMessages(t *testing.T) {
 	env := newTestEnv(t)
 	cases := []struct {

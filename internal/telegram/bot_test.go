@@ -208,6 +208,49 @@ func TestPollingCancellationStopsPromptly(t *testing.T) {
 	}
 }
 
+func TestRunCancelsBackgroundSync(t *testing.T) {
+	env := newTestEnv(t)
+	started := make(chan struct{})
+	env.syncer.syncAll = func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	var once atomic.Bool
+	env.tg.setHandler("getUpdates", func(ctx context.Context, _ map[string]any) (any, *tgFailure) {
+		if once.CompareAndSwap(false, true) {
+			return []update{{
+				UpdateID: 1,
+				Message: &message{
+					MessageID: 1,
+					From:      &user{ID: 7},
+					Chat:      chat{ID: 42},
+					Text:      "/sync",
+				},
+			}}, nil
+		}
+		<-ctx.Done()
+		return []update{}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- env.bot.Run(ctx) }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background sync did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run returned %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not wait for the background sync to exit")
+	}
+}
+
 func TestPollingHandlesCallbackUpdates(t *testing.T) {
 	env := newTestEnv(t)
 	invoice := sampleInvoice()

@@ -188,14 +188,32 @@ func (b *Bot) commandSync(ctx context.Context) (reply, error) {
 	if b.syncer == nil {
 		return reply{parts: []string{"Sync is not configured."}}, nil
 	}
-	// Bound the interactive sync so a slow provider cannot stall polling
-	// indefinitely.
-	syncCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	if err := b.syncer.SyncAll(syncCtx); err != nil {
-		return reply{}, fmt.Errorf("sync all: %w", err)
+	b.syncMu.Lock()
+	if b.syncRunning {
+		b.syncMu.Unlock()
+		return reply{parts: []string{"Sync is already running."}}, nil
 	}
-	return reply{parts: []string{"Sync completed."}}, nil
+	b.syncRunning = true
+	b.syncWG.Add(1)
+	b.syncMu.Unlock()
+
+	// Run the sync in the background so polling and payment callbacks stay
+	// responsive. The derived context is cancelled with the bot and bounded by
+	// a hard timeout.
+	go func() {
+		defer b.syncWG.Done()
+		defer func() {
+			b.syncMu.Lock()
+			b.syncRunning = false
+			b.syncMu.Unlock()
+		}()
+		syncCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		if err := b.syncer.SyncAll(syncCtx); err != nil {
+			b.log.Warn("telegram: background sync failed", "error", err.Error())
+		}
+	}()
+	return reply{parts: []string{"Sync started in the background."}}, nil
 }
 
 func (b *Bot) commandLatest(ctx context.Context) (reply, error) {
@@ -203,7 +221,7 @@ func (b *Bot) commandLatest(ctx context.Context) (reply, error) {
 	if err != nil {
 		return reply{}, fmt.Errorf("list emails: %w", err)
 	}
-	return b.renderEmails("Latest mail", emails), nil
+	return b.renderEmails(ctx, "Latest mail", emails), nil
 }
 
 func (b *Bot) commandSearch(ctx context.Context, args []string) (reply, error) {
@@ -215,17 +233,17 @@ func (b *Bot) commandSearch(ctx context.Context, args []string) (reply, error) {
 	if err != nil {
 		return reply{}, fmt.Errorf("search emails: %w", err)
 	}
-	return b.renderEmails("Search results", emails), nil
+	return b.renderEmails(ctx, "Search results", emails), nil
 }
 
-func (b *Bot) renderEmails(title string, emails []core.NormalizedEmail) reply {
+func (b *Bot) renderEmails(ctx context.Context, title string, emails []core.NormalizedEmail) reply {
 	if len(emails) == 0 {
 		return reply{parts: []string{title + ": nothing found."}}
 	}
 	lines := make([]string, 0, len(emails))
 	rows := make([][]inlineButton, 0, len(emails))
 	for i, email := range emails {
-		lines = append(lines, fmt.Sprintf("%d. %s — %s (%s)", i+1, formatAddress(email.From), email.Subject, b.formatTime(email.ReceivedAt)))
+		lines = append(lines, fmt.Sprintf("%d. %s — %s (%s)", i+1, formatAddress(email.From), email.Subject, b.formatTime(ctx, email.ReceivedAt)))
 		rows = append(rows, []inlineButton{{
 			Text:         fmt.Sprintf("Mail %d", i+1),
 			CallbackData: callbackData(cbEmail, email.InternalEmailID),
@@ -263,7 +281,7 @@ func (b *Bot) commandInvoices(ctx context.Context, args []string) (reply, error)
 		return reply{}, fmt.Errorf("list invoices: %w", err)
 	}
 	if overdueOnly {
-		today := core.LocalDate(b.now(), b.location())
+		today := core.LocalDate(b.now(), b.location(ctx))
 		kept := invoices[:0]
 		for _, inv := range invoices {
 			if days, err := core.DaysUntil(inv.DueDate, today); err == nil && days < 0 {
@@ -347,20 +365,28 @@ func renderList(title string, lines []string, keyboard *inlineKeyboard) reply {
 	return reply{parts: c.finish(), keyboard: keyboard}
 }
 
-func (b *Bot) location() *time.Location {
+func (b *Bot) location(ctx context.Context) *time.Location {
+	// The dynamic setting wins; cfg is the startup fallback.
+	if b.store != nil {
+		if value, err := b.store.GetSetting(ctx, settingTimezone); err == nil && value != "" {
+			if loc, err := time.LoadLocation(value); err == nil {
+				return loc
+			}
+		}
+	}
 	if b.cfg.Timezone != "" {
 		if loc, err := time.LoadLocation(b.cfg.Timezone); err == nil {
 			return loc
 		}
 	}
-	return time.UTC
+	return defaultDisplayLocation()
 }
 
-func (b *Bot) formatTime(t time.Time) string {
+func (b *Bot) formatTime(ctx context.Context, t time.Time) string {
 	if t.IsZero() {
 		return "unknown"
 	}
-	return t.In(b.location()).Format("2006-01-02 15:04")
+	return t.In(b.location(ctx)).Format(displayTimeLayout)
 }
 
 func ptrText(s *string) string {

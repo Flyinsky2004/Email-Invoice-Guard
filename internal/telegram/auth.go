@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"net/url"
 	"strings"
 
 	"email-invoice-guard/internal/core"
@@ -69,23 +70,52 @@ func (b *Bot) authorizedCallback(cq *callbackQuery) bool {
 	return cq != nil && cq.Message != nil && b.authorizedUser(cq.From.ID) && b.authorizedChat(cq.Message.Chat.ID)
 }
 
-// trustedVendorHost returns the fixed merchant host allowed for invoice URL
-// buttons. Unknown vendors never get a link button.
-func trustedVendorHost(providerID string) string {
-	switch strings.ToLower(providerID) {
-	case "rfchost":
-		return "rfchost.com"
-	default:
-		return ""
+// Trusted merchant invoice URL shape, matching the RFCHOST parser fixture:
+// https://my.rfchost.com/viewinvoice.php?id=143058
+const (
+	trustedInvoiceHost = "my.rfchost.com"
+	trustedInvoicePath = "/viewinvoice.php"
+)
+
+// trustedInvoiceURL accepts only the exact merchant invoice shape. Any extra
+// query parameter (for example a redirect target), duplicate id, non-numeric
+// id, userinfo, non-443 port or fragment is rejected.
+func trustedInvoiceURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
 	}
+	if u.Scheme != "https" || !strings.EqualFold(u.Hostname(), trustedInvoiceHost) {
+		return false
+	}
+	if u.User != nil || (u.Port() != "" && u.Port() != "443") || u.Fragment != "" {
+		return false
+	}
+	if u.Path != trustedInvoicePath {
+		return false
+	}
+	query := u.Query()
+	if len(query) != 1 {
+		return false
+	}
+	ids, ok := query["id"]
+	if !ok || len(ids) != 1 || ids[0] == "" {
+		return false
+	}
+	for _, r := range ids[0] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // invoiceKeyboard builds the enhanced invoice keyboard. The merchant URL is
-// only attached when it matches the fixed trusted host; the original mail is
-// always reachable through a callback.
+// only attached when it matches the fixed trusted invoice shape; the original
+// mail is always reachable through a callback.
 func (b *Bot) invoiceKeyboard(inv core.Invoice) *inlineKeyboard {
 	rows := make([][]inlineButton, 0, 3)
-	if host := trustedVendorHost(inv.ProviderID); host != "" && core.TrustedInvoiceURL(inv.URL, host) {
+	if trustedInvoiceURL(inv.URL) {
 		rows = append(rows, []inlineButton{{Text: "View invoice", URL: inv.URL}})
 	}
 	if inv.SourceEmailID != "" {

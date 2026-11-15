@@ -171,3 +171,27 @@
 - 修复 commit：本分支 T07 实现提交（SHA 见 result.txt）。
 - Done right: mock 增加 reset() 并在断言前清空；用 "INV-2 "（带空格）做边界匹配；跨交互断言取最后一次调用。
 - Seen 1× (2026-11-15).
+
+**可信链接校验必须对齐真实 fixture 的 host+path+query，不能只校验 host。**
+- T07 初版把 RFCHOST 信任域写成 rfchost.com 且只校验 host，真实账单是 https://my.rfchost.com/viewinvoice.php?id=143058；会漏掉合法按钮或放行伪造路径/redirect 参数。正式验收退修指出。
+- 修复 commit：本分支 T07 验收修复提交（SHA 见 result.txt）。
+- Done right: 固定 my.rfchost.com + /viewinvoice.php + 单一数字 id；拒绝额外 query、重复 id、userinfo、非 443 端口、fragment；用精确 fixture 与恶意 redirect 用例断言。
+- Seen 1× (2026-11-15).
+
+**限流等待后、每次外部发送前必须重新校验业务状态。**
+- T07 初版只在渲染前检查提醒是否 pending，限流等待期间用户确认支付后仍会发出过期提醒。正式验收退修指出。
+- 修复 commit：本分支 T07 验收修复提交（SHA 见 result.txt）。
+- Done right: 在 limiter.wait 之后、sendMessage 之前重新 GetInvoice；非 pending 立即 SkipDelivery；测试用可控 sleep 模拟 queued→wait→confirm→no send。
+- Seen 1× (2026-11-15).
+
+**长耗时命令不得在轮询 goroutine 内同步执行，后台任务需可取消并纳入退出等待。**
+- T07 初版 /sync 同步执行最长 2 分钟，阻塞 polling 导致支付确认延迟。正式验收退修指出。
+- 修复 commit：本分支 T07 验收修复提交（SHA 见 result.txt）。
+- Done right: /sync 立即回应并在后台 goroutine 执行，重复触发拒绝；ctx 取消传播到 SyncAll，Run 退出时有界等待后台任务结束。
+- Seen 1× (2026-11-15).
+
+**用户可见时间必须使用动态配置时区并显式标注偏移，不得硬编码 UTC。**
+- T07 初版 FormatEmail 强制 ReceivedAt.UTC()，忽略 cfg.Timezone 与动态 timezone 设置。正式验收退修指出。
+- 修复 commit：本分支 T07 验收修复提交（SHA 见 result.txt）。
+- Done right: 导出 FormatEmail/FormatInvoice 默认 Asia/Taipei，Bot 使用私有 formatEmailAt/formatInvoiceAt 读取动态 timezone；时间格式带 MST 与 -07:00 偏移；账单确认时间同样标注时区。
+- Seen 1× (2026-11-15).

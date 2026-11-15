@@ -508,6 +508,68 @@ func TestDeliverOnceTransportTimeoutIsUnknown(t *testing.T) {
 	}
 }
 
+func TestReminderRecheckedAfterRateLimitWait(t *testing.T) {
+	env := newTestEnv(t)
+	rec := &deliveryRecorder{}
+	rec.install(env.store)
+	invoice := sampleInvoice()
+	var mu sync.Mutex
+	status := core.PendingConfirmation
+	env.store.getInvoice = func(context.Context, string) (core.Invoice, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		out := invoice
+		out.Status = status
+		return out, nil
+	}
+	env.store.getAccount = func(context.Context, string) (core.MailAccount, error) { return sampleAccount(), nil }
+	env.store.claimDelivery = func(context.Context, time.Time, time.Duration) (*core.Delivery, error) {
+		return &core.Delivery{ID: testID(6), Payload: core.DeliveryPayload{
+			Kind: "reminder", InvoiceID: invoice.ID, ReminderID: testID(7),
+		}}, nil
+	}
+	env.cfg.Telegram.RateInterval = 10 * time.Millisecond
+	env.rebuild()
+	// Force the first send to wait on the rate limiter.
+	env.bot.limiter.lastGlobal = time.Now()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	env.bot.limiter.sleep = func(context.Context, time.Duration) error {
+		close(started)
+		<-release
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = env.bot.DeliverOnce(context.Background())
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("reminder did not reach the rate-limit wait")
+	}
+	// The user confirms payment while the reminder waits for its send slot.
+	mu.Lock()
+	status = core.PaidConfirmed
+	mu.Unlock()
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("DeliverOnce did not finish")
+	}
+
+	if got := env.tg.count("sendMessage"); got != 0 {
+		t.Fatalf("stale reminder was sent after confirmation during the limiter wait: %d sends", got)
+	}
+	_, _, _, _, skipped := rec.snapshot()
+	if len(skipped) != 1 {
+		t.Fatalf("reminder was not skipped: %v", skipped)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
