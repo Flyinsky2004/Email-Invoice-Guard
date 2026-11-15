@@ -99,3 +99,9 @@
 - 修复 commit：f962f0b。
 - Done right: 使用 x/net/html 遍历 DOM，跳过 script/style/head，块级元素换行并归一空白；测试覆盖未知标签、中文与实体。
 - Seen 1× (2026-11-15).
+
+**集合导航属性不得用 $expand 代替可分页端点，否则会静默丢项**
+- T01 首版 fetchAttachments 使用 $expand=attachments，忽略 @odata.nextLink，附件超过一页时会丢失文件名与数量。
+- 修复 commit：4fc35ed。
+- Done right: GET /me/messages/{id}/attachments?$select=id,name,contentType,size 遍历 nextLink，不请求 contentBytes；两页回归测试；附件 ID 用 account+message+graphID 哈希生成 32-hex，避免跨账号碰撞。
+- Seen 1× (2026-11-15).
