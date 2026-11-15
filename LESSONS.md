@@ -195,3 +195,15 @@
 - 修复 commit：本分支 T07 验收修复提交（SHA 见 result.txt）。
 - Done right: 导出 FormatEmail/FormatInvoice 默认 Asia/Taipei，Bot 使用私有 formatEmailAt/formatInvoiceAt 读取动态 timezone；时间格式带 MST 与 -07:00 偏移；账单确认时间同样标注时区。
 - Seen 1× (2026-11-15).
+
+**只有 ErrNotFound 才能标记 SKIPPED；其他存储读取错误必须 FailDelivery 重试。**
+- T07 renderDelivery 初版对 GetInvoice/GetEmail 任意错误都 SkipDelivery，数据库 busy/代理错误会永久丢弃邮件；GetAccount 暂时失败也被静默降级。验收补充指出。
+- 修复 commit：本分支 T07 补充修复提交（SHA 见 result.txt）。
+- Done right: errors.Is(err, core.ErrNotFound) 才 SkipDelivery，其余 FailDelivery(unknown=false)；GetAccount 暂时失败同样重试，仅 NotFound 用最小账户继续；测试覆盖 invoice/email/account 三类 transient read。
+- Seen 1× (2026-11-15).
+
+**同一账单的增强通知键盘必须指向触发本次通知的邮件，而不是账单首封。**
+- T07 初版 keyboard 总用 inv.SourceEmailID，同一账单第二封邮件点“原始邮件”看到的是首封全文。验收补充指出。
+- 修复 commit：本分支 T07 补充修复提交（SHA 见 result.txt）。
+- Done right: clone invoice 后用 payload.EmailID 覆盖 SourceEmailID 再生成 keyboard，不修改持久账单；测试 duplicate invoice different email 断言按钮指向第二封且能取到第二封全文。
+- Seen 1× (2026-11-15).

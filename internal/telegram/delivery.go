@@ -125,7 +125,12 @@ func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (part
 	if invoiceDelivery {
 		inv, err := b.store.GetInvoice(ctx, payload.InvoiceID)
 		if err != nil {
-			b.skipDelivery(ctx, delivery, "invoice unavailable")
+			if errors.Is(err, core.ErrNotFound) {
+				b.skipDelivery(ctx, delivery, "invoice unavailable")
+			} else {
+				// A transient store failure must be retried, not discarded.
+				b.failDelivery(ctx, delivery, false, "load invoice: "+sanitizeReason(err))
+			}
 			return nil, nil, "", false
 		}
 		if payload.Kind == "reminder" && inv.Status != core.PendingConfirmation {
@@ -133,22 +138,41 @@ func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (part
 			b.skipDelivery(ctx, delivery, "reminder is stale")
 			return nil, nil, "", false
 		}
-		account := b.deliveryAccount(ctx, inv.AccountID, core.Microsoft)
+		account, err := b.deliveryAccount(ctx, inv.AccountID, core.Microsoft)
+		if err != nil {
+			b.failDelivery(ctx, delivery, false, "load account: "+sanitizeReason(err))
+			return nil, nil, "", false
+		}
 		parts := formatInvoiceAt(inv, account, b.location(ctx))
 		if payload.Kind == "reminder" {
 			// Recompute against the current local date instead of trusting the
 			// scheduling-time payload text.
 			parts = appendEscapedLine(parts, b.reminderNote(ctx, inv))
 		}
-		return parts, b.invoiceKeyboard(inv), inv.ID, true
+		// Prefer the mail that triggered this notification so a second mail for
+		// the same invoice still opens its own full text. The persisted invoice
+		// is never mutated.
+		keyboardInvoice := inv
+		if payload.EmailID != "" {
+			keyboardInvoice.SourceEmailID = payload.EmailID
+		}
+		return parts, b.invoiceKeyboard(keyboardInvoice), inv.ID, true
 	}
 
 	email, err := b.store.GetEmail(ctx, payload.EmailID)
 	if err != nil {
-		b.skipDelivery(ctx, delivery, "email unavailable")
+		if errors.Is(err, core.ErrNotFound) {
+			b.skipDelivery(ctx, delivery, "email unavailable")
+		} else {
+			b.failDelivery(ctx, delivery, false, "load email: "+sanitizeReason(err))
+		}
 		return nil, nil, "", false
 	}
-	account := b.deliveryAccount(ctx, email.AccountID, email.ProviderType)
+	account, err := b.deliveryAccount(ctx, email.AccountID, email.ProviderType)
+	if err != nil {
+		b.failDelivery(ctx, delivery, false, "load account: "+sanitizeReason(err))
+		return nil, nil, "", false
+	}
 	return formatEmailAt(email, account, b.location(ctx)), nil, "", true
 }
 
@@ -184,12 +208,18 @@ func appendEscapedLine(parts []string, line string) []string {
 	return append(parts, escaped)
 }
 
-func (b *Bot) deliveryAccount(ctx context.Context, accountID string, provider core.ProviderType) core.MailAccount {
+// deliveryAccount loads the account for rendering. A missing account is
+// tolerated (historical mail survives soft removal), but a transient store
+// failure is returned so the delivery is retried rather than dropped.
+func (b *Bot) deliveryAccount(ctx context.Context, accountID string, provider core.ProviderType) (core.MailAccount, error) {
 	account, err := b.store.GetAccount(ctx, accountID)
 	if err != nil {
-		return core.MailAccount{ID: accountID, Provider: provider}
+		if errors.Is(err, core.ErrNotFound) {
+			return core.MailAccount{ID: accountID, Provider: provider}, nil
+		}
+		return core.MailAccount{}, err
 	}
-	return account
+	return account, nil
 }
 
 func (b *Bot) failDelivery(ctx context.Context, delivery *core.Delivery, unknown bool, reason string) {

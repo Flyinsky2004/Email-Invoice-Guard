@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -567,6 +568,150 @@ func TestReminderRecheckedAfterRateLimitWait(t *testing.T) {
 	_, _, _, _, skipped := rec.snapshot()
 	if len(skipped) != 1 {
 		t.Fatalf("reminder was not skipped: %v", skipped)
+	}
+}
+
+func TestDeliverOnceTransientReadFailureRetries(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload core.DeliveryPayload
+		setup   func(*testEnv)
+		reason  string
+	}{
+		{
+			name:    "invoice read",
+			payload: core.DeliveryPayload{Kind: "invoice", InvoiceID: testID(3)},
+			setup: func(env *testEnv) {
+				env.store.getInvoice = func(context.Context, string) (core.Invoice, error) {
+					return core.Invoice{}, errBoom
+				}
+			},
+			reason: "load invoice",
+		},
+		{
+			name:    "email read",
+			payload: core.DeliveryPayload{Kind: "email", EmailID: testID(1)},
+			setup: func(env *testEnv) {
+				env.store.getEmail = func(context.Context, string) (core.NormalizedEmail, error) {
+					return core.NormalizedEmail{}, errBoom
+				}
+			},
+			reason: "load email",
+		},
+		{
+			name:    "account read",
+			payload: core.DeliveryPayload{Kind: "email", EmailID: testID(1)},
+			setup: func(env *testEnv) {
+				email := sampleEmail()
+				env.store.getEmail = func(context.Context, string) (core.NormalizedEmail, error) { return email, nil }
+				env.store.getAccount = func(context.Context, string) (core.MailAccount, error) {
+					return core.MailAccount{}, errBoom
+				}
+			},
+			reason: "load account",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t)
+			rec := &deliveryRecorder{}
+			rec.install(env.store)
+			tc.setup(env)
+			env.store.claimDelivery = func(context.Context, time.Time, time.Duration) (*core.Delivery, error) {
+				return &core.Delivery{ID: testID(6), Payload: tc.payload}, nil
+			}
+			if _, err := env.bot.DeliverOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			recorded, completed, failed, unknown, skipped := rec.snapshot()
+			if len(skipped) != 0 {
+				t.Fatalf("transient read failure was permanently skipped: %v", skipped)
+			}
+			if len(failed) != 1 || unknown[0] {
+				t.Fatalf("transient read failure should be a known retry: %v %v", failed, unknown)
+			}
+			if !strings.Contains(failed[0], tc.reason) {
+				t.Fatalf("failure reason %q missing %q", failed[0], tc.reason)
+			}
+			if len(recorded) != 0 || len(completed) != 0 || env.tg.count("sendMessage") != 0 {
+				t.Fatal("transient read failure still attempted a send")
+			}
+		})
+	}
+}
+
+func TestDeliverOnceMissingInvoiceSkips(t *testing.T) {
+	env := newTestEnv(t)
+	rec := &deliveryRecorder{}
+	rec.install(env.store)
+	env.store.getInvoice = func(context.Context, string) (core.Invoice, error) {
+		return core.Invoice{}, core.ErrNotFound
+	}
+	env.store.claimDelivery = func(context.Context, time.Time, time.Duration) (*core.Delivery, error) {
+		return &core.Delivery{ID: testID(6), Payload: core.DeliveryPayload{Kind: "invoice", InvoiceID: testID(3)}}, nil
+	}
+	if _, err := env.bot.DeliverOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, _, failed, _, skipped := rec.snapshot()
+	if len(failed) != 0 || len(skipped) != 1 {
+		t.Fatalf("missing invoice should be skipped: failed=%v skipped=%v", failed, skipped)
+	}
+}
+
+func TestInvoiceKeyboardPrefersPayloadEmail(t *testing.T) {
+	env := newTestEnv(t)
+	rec := &deliveryRecorder{}
+	rec.install(env.store)
+	invoice := sampleInvoice()
+	firstEmailID := invoice.SourceEmailID
+	secondEmailID := testID(9)
+	second := sampleEmail()
+	second.InternalEmailID = secondEmailID
+	second.TextBody = "second copy full body"
+
+	env.store.getInvoice = func(context.Context, string) (core.Invoice, error) { return invoice, nil }
+	env.store.getAccount = func(context.Context, string) (core.MailAccount, error) { return sampleAccount(), nil }
+	env.store.getEmail = func(_ context.Context, id string) (core.NormalizedEmail, error) {
+		if id == secondEmailID {
+			return second, nil
+		}
+		return core.NormalizedEmail{}, core.ErrNotFound
+	}
+	env.store.claimDelivery = func(context.Context, time.Time, time.Duration) (*core.Delivery, error) {
+		return &core.Delivery{ID: testID(6), Payload: core.DeliveryPayload{
+			Kind: "invoice", InvoiceID: invoice.ID, EmailID: secondEmailID,
+		}}, nil
+	}
+
+	if _, err := env.bot.DeliverOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	calls := env.tg.callsFor("sendMessage")
+	if len(calls) == 0 {
+		t.Fatal("invoice notification was not sent")
+	}
+	markup, ok := calls[len(calls)-1].Body["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatal("invoice keyboard missing")
+	}
+	raw, _ := json.Marshal(markup)
+	serialized := string(raw)
+	if !strings.Contains(serialized, callbackData(cbEmail, secondEmailID)) {
+		t.Fatalf("keyboard does not point at the triggering mail: %s", serialized)
+	}
+	if strings.Contains(serialized, callbackData(cbEmail, firstEmailID)) {
+		t.Fatalf("keyboard still points at the first invoice mail: %s", serialized)
+	}
+	if invoice.SourceEmailID != firstEmailID {
+		t.Fatal("persisted invoice was mutated")
+	}
+
+	env.tg.reset()
+	env.runCallback(callbackData(cbEmail, secondEmailID))
+	text := sentText(env.tg.callsFor("sendMessage"))
+	if !strings.Contains(text, "second copy full body") {
+		t.Fatalf("second mail full text not reachable: %q", text)
 	}
 }
 
