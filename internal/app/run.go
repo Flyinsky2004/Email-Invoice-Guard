@@ -19,6 +19,7 @@ import (
 	"email-invoice-guard/internal/providers/microsoft"
 	"email-invoice-guard/internal/providers/qq"
 	"email-invoice-guard/internal/reminder"
+	manualreminder "email-invoice-guard/internal/reminder/manual"
 	"email-invoice-guard/internal/storage"
 	syncengine "email-invoice-guard/internal/sync"
 	"email-invoice-guard/internal/telegram"
@@ -77,10 +78,13 @@ func Run(ctx context.Context, cfg core.Config, logger *slog.Logger) error {
 	syncService := syncengine.New(store, sources, parsers, linker, cfg, logger)
 	payments := lifecycle.New(store, cfg.Telegram.AllowedUserIDs)
 	scheduler := reminder.New(store, cfg, logger)
+	// *storage.Store satisfies core.ManualReminderRepository; the manual
+	// service owns plan lifecycle, occurrence confirmation and its scheduler.
+	manualService := manualreminder.NewService(store, cfg, logger)
 
 	// The Telegram client must outlive the long-poll timeout.
 	tgClient := &http.Client{Timeout: cfg.Telegram.PollTimeout + 15*time.Second}
-	bot := telegram.New(store, payments, syncService, parsers, onboarding, cfg, tgClient, logger)
+	bot := telegram.NewWithManual(store, payments, syncService, parsers, onboarding, manualService, cfg, tgClient, logger)
 
 	httpServer := server.New(cfg, store, msSource, qqOnboarding)
 
@@ -90,6 +94,7 @@ func Run(ctx context.Context, cfg core.Config, logger *slog.Logger) error {
 	g := newErrGroup(cancel)
 	g.Go(func() error { return syncService.Run(runCtx) })
 	g.Go(func() error { return scheduler.Run(runCtx) })
+	g.Go(func() error { return manualService.Run(runCtx) })
 	g.Go(func() error { return bot.Run(runCtx) })
 	g.Go(func() error {
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

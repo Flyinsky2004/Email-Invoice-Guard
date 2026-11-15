@@ -309,3 +309,9 @@
 - 修复 commit：待定位（本次 T12 修复提交）。
 - Done right: `mp` 只显示确认提示（Confirm=`mc`、Cancel=`mv`），`mc` 才调用 `ConfirmOccurrence`；只用 `core.ManualReminderService` 与 `core.Store` 的冻结方法；向导含 period（仅 monthly）与 asset（`ListAssets(Limit:0)` + Skip）步骤。
 - Seen 1× (2026-11-15).
+
+**Go 的 time.Parse("15:04") 接受单数字小时，不能用它严格校验 HH:MM。**
+- T13 初版测试（本次提交前）断言 MANUAL_DEFAULT_TIME="9:00" 应失败，实际 time.Parse 接受 1 位小时，TestLoadConfigRejectsBadManual/time 失败；若依赖它校验会接受非规范格式。
+- 修复 commit: 本次 T13 实现提交（SHA 见 result.txt）；沿用既有 REMINDER_TIME 的宽松语义，测试改用真正非法值 "9am" 与 "24:00"。
+- Done right: 明确要求严格 HH:MM 时用正则或自定义解析；仅需合法性时与既有 REMINDER_TIME 保持一致，并用真正非法值做回归测试。
+- Seen 1× (2026-11-15).

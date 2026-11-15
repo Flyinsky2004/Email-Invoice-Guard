@@ -37,6 +37,15 @@ const (
 	defaultIMAPTimeout  = 30 * time.Second
 	defaultIMAPSession  = 15 * time.Minute
 
+	defaultManualTime       = "09:00"
+	defaultManualTimezone   = "Asia/Taipei"
+	defaultManualDailyRetry = true
+	defaultManualInterval   = 24 * time.Hour
+	defaultManualMonthEnd   = "last_day"
+	defaultManualScheduler  = 30 * time.Second
+	defaultManualWizardTTL  = 10 * time.Minute
+	defaultManualCatchUp    = 24
+
 	encryptionKeySize = 32
 	microsoftCallback = "/oauth/microsoft/callback"
 	qqSetupPath       = "/setup/qq"
@@ -149,6 +158,9 @@ func loadConfig(get func(string) string) (core.Config, error) {
 	add(err)
 
 	cfg.IMAP, err = loadIMAP(l, allowInsecure, cfg.PublicBaseURL)
+	add(err)
+
+	cfg.Manual, err = loadManual(l)
 	add(err)
 
 	if len(problems) > 0 {
@@ -322,6 +334,89 @@ func loadIMAP(l envLoader, allowInsecure bool, publicBase string) (core.IMAPConf
 		return core.IMAPConfig{}, errors.Join(problems...)
 	}
 	return cfg, nil
+}
+
+// loadManual validates the operator-declared recurring reminder settings. Every
+// value has a documented default; an invalid value fails startup with an error
+// that names the variable and never echoes a secret.
+func loadManual(l envLoader) (core.ManualReminderConfig, error) {
+	var cfg core.ManualReminderConfig
+	var problems []error
+	add := func(err error) {
+		if err != nil {
+			problems = append(problems, err)
+		}
+	}
+
+	cfg.DefaultTime = l.strDefault("MANUAL_DEFAULT_TIME", defaultManualTime)
+	if _, err := time.Parse("15:04", cfg.DefaultTime); err != nil {
+		add(errors.New("MANUAL_DEFAULT_TIME: must be HH:MM in 24h form"))
+	}
+
+	cfg.DefaultTimezone = l.strDefault("MANUAL_DEFAULT_TIMEZONE", defaultManualTimezone)
+	if _, err := time.LoadLocation(cfg.DefaultTimezone); err != nil {
+		add(fmt.Errorf("MANUAL_DEFAULT_TIMEZONE: unknown location %q", cfg.DefaultTimezone))
+	}
+
+	dailyRetry, err := parseBoolStrict("MANUAL_DAILY_RETRY", l.str("MANUAL_DAILY_RETRY"), defaultManualDailyRetry)
+	add(err)
+	cfg.DailyRetry = dailyRetry
+
+	if cfg.DailyInterval, err = l.duration("MANUAL_DAILY_INTERVAL", defaultManualInterval); err != nil {
+		add(err)
+	} else if cfg.DailyInterval <= 0 {
+		add(errors.New("MANUAL_DAILY_INTERVAL: must be positive"))
+	}
+
+	cfg.MonthEndPolicy = l.strDefault("MANUAL_MONTH_END_POLICY", defaultManualMonthEnd)
+	if cfg.MonthEndPolicy != defaultManualMonthEnd {
+		add(errors.New("MANUAL_MONTH_END_POLICY: only last_day is supported"))
+	}
+
+	if cfg.SchedulerInterval, err = l.duration("MANUAL_SCHEDULER_INTERVAL", defaultManualScheduler); err != nil {
+		add(err)
+	} else if cfg.SchedulerInterval <= 0 {
+		add(errors.New("MANUAL_SCHEDULER_INTERVAL: must be positive"))
+	}
+
+	if cfg.WizardTTL, err = l.duration("MANUAL_WIZARD_TTL", defaultManualWizardTTL); err != nil {
+		add(err)
+	} else if cfg.WizardTTL <= 0 {
+		add(errors.New("MANUAL_WIZARD_TTL: must be positive"))
+	}
+
+	rawCatchUp := l.str("MANUAL_MAX_CATCHUP_MONTHS")
+	switch {
+	case rawCatchUp == "":
+		cfg.MaxCatchUpMonths = defaultManualCatchUp
+	default:
+		n, convErr := strconv.Atoi(rawCatchUp)
+		if convErr != nil || n < 1 || n > 120 {
+			add(errors.New("MANUAL_MAX_CATCHUP_MONTHS: must be an integer between 1 and 120"))
+		} else {
+			cfg.MaxCatchUpMonths = n
+		}
+	}
+
+	if len(problems) > 0 {
+		return core.ManualReminderConfig{}, errors.Join(problems...)
+	}
+	return cfg, nil
+}
+
+// parseBoolStrict accepts the documented boolean spellings and rejects anything
+// else, unlike parseBool which silently treats unknown values as false.
+func parseBoolStrict(key, raw string, def bool) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return def, nil
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s: must be a boolean", key)
+	}
 }
 
 func loadEncryptionKey(l envLoader) ([]byte, error) {

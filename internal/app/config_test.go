@@ -50,6 +50,14 @@ func baseEnv(t *testing.T) {
 	t.Setenv("IMAP_SESSION_TTL", "")
 	t.Setenv("QQ_ALLOWED_DOMAINS", "")
 	t.Setenv("TRUSTED_PROXY_CIDRS", "")
+	t.Setenv("MANUAL_DEFAULT_TIME", "")
+	t.Setenv("MANUAL_DEFAULT_TIMEZONE", "")
+	t.Setenv("MANUAL_DAILY_RETRY", "")
+	t.Setenv("MANUAL_DAILY_INTERVAL", "")
+	t.Setenv("MANUAL_MONTH_END_POLICY", "")
+	t.Setenv("MANUAL_SCHEDULER_INTERVAL", "")
+	t.Setenv("MANUAL_WIZARD_TTL", "")
+	t.Setenv("MANUAL_MAX_CATCHUP_MONTHS", "")
 	t.Setenv("ALLOW_INSECURE_HTTP", "")
 }
 
@@ -192,6 +200,83 @@ func TestLoadConfigRejectsBadSchedule(t *testing.T) {
 		{"health path", "HEALTH_PATH", "healthz"},
 		{"health collision", "HEALTH_PATH", "/setup/qq"},
 		{"listen", "LISTEN_ADDRESS", "8080"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			baseEnv(t)
+			t.Setenv(c.key, c.value)
+			_, err := LoadConfig()
+			if err == nil || !strings.Contains(err.Error(), c.key) {
+				t.Fatalf("want %s error, got %v", c.key, err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigManualDefaults(t *testing.T) {
+	baseEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	m := cfg.Manual
+	if m.DefaultTime != "09:00" || m.DefaultTimezone != "Asia/Taipei" {
+		t.Fatalf("manual clock defaults: %+v", m)
+	}
+	if !m.DailyRetry {
+		t.Fatal("manual daily retry must default to true")
+	}
+	if m.DailyInterval != 24*time.Hour || m.SchedulerInterval != 30*time.Second || m.WizardTTL != 10*time.Minute {
+		t.Fatalf("manual duration defaults: %+v", m)
+	}
+	if m.MonthEndPolicy != "last_day" || m.MaxCatchUpMonths != 24 {
+		t.Fatalf("manual policy defaults: %+v", m)
+	}
+}
+
+func TestLoadConfigManualOverrides(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("MANUAL_DEFAULT_TIME", "07:45")
+	t.Setenv("MANUAL_DEFAULT_TIMEZONE", "Europe/Berlin")
+	t.Setenv("MANUAL_DAILY_RETRY", "false")
+	t.Setenv("MANUAL_DAILY_INTERVAL", "12h")
+	t.Setenv("MANUAL_MONTH_END_POLICY", "last_day")
+	t.Setenv("MANUAL_SCHEDULER_INTERVAL", "5s")
+	t.Setenv("MANUAL_WIZARD_TTL", "2m")
+	t.Setenv("MANUAL_MAX_CATCHUP_MONTHS", "6")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	m := cfg.Manual
+	if m.DefaultTime != "07:45" || m.DefaultTimezone != "Europe/Berlin" {
+		t.Fatalf("manual clock overrides: %+v", m)
+	}
+	if m.DailyRetry {
+		t.Fatal("MANUAL_DAILY_RETRY=false was ignored")
+	}
+	if m.DailyInterval != 12*time.Hour || m.SchedulerInterval != 5*time.Second || m.WizardTTL != 2*time.Minute {
+		t.Fatalf("manual duration overrides: %+v", m)
+	}
+	if m.MonthEndPolicy != "last_day" || m.MaxCatchUpMonths != 6 {
+		t.Fatalf("manual policy overrides: %+v", m)
+	}
+}
+
+func TestLoadConfigRejectsBadManual(t *testing.T) {
+	cases := []struct{ name, key, value string }{
+		{"time", "MANUAL_DEFAULT_TIME", "9am"},
+		{"time hours", "MANUAL_DEFAULT_TIME", "24:00"},
+		{"timezone", "MANUAL_DEFAULT_TIMEZONE", "Mars/Olympus"},
+		{"retry", "MANUAL_DAILY_RETRY", "sometimes"},
+		{"daily interval", "MANUAL_DAILY_INTERVAL", "0s"},
+		{"daily interval format", "MANUAL_DAILY_INTERVAL", "daily"},
+		{"month end", "MANUAL_MONTH_END_POLICY", "first_day"},
+		{"scheduler", "MANUAL_SCHEDULER_INTERVAL", "-1s"},
+		{"wizard ttl", "MANUAL_WIZARD_TTL", "0s"},
+		{"catch up zero", "MANUAL_MAX_CATCHUP_MONTHS", "0"},
+		{"catch up high", "MANUAL_MAX_CATCHUP_MONTHS", "121"},
+		{"catch up format", "MANUAL_MAX_CATCHUP_MONTHS", "many"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
