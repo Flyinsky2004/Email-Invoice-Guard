@@ -153,3 +153,21 @@
 - 修复 commit：本次 T04 修复提交。
 - Done right: 捕获组包含完整优惠方式词组（如 `(.*?Discount)`），测试断言精确样例值。
 - Seen 1× (2026-11-15).
+
+**Telegram 发送响应不可解析或缺少 message_id 时必须记为 UNKNOWN，不能记为确定失败或成功。**
+- T07 初版 api.go 把 HTTP 200 但响应体损坏当作确定 apiError，把空 result 当成功；若消息实际已送达会漏记 ID 并误判状态。Codex 早期审查指出。
+- 修复 commit：本分支 T07 实现提交（SHA 见 result.txt）。
+- Done right: call 对 200 无法解析/result 解码失败返回 transportError；sendMessage 校验 MessageID != 0；delivery 仅把 apiError 记为已知失败，其余为 UNKNOWN。
+- Seen 1× (2026-11-15).
+
+**不可信长文本不得拼进 writeHTML 标签，必须先转义再按 rune 分块。**
+- T07 初版 FormatInvoice 用 "<b>Invoice "+escape(Number)+"</b>"，超长 Number 会触发按 rune 拆分并可能拆断 HTML 实体。Codex 早期审查指出。
+- 修复 commit：本分支 T07 实现提交（SHA 见 result.txt）。
+- Done right: 固定标签单独 writeHTML("<b>Invoice</b>")，内容走 writeRaw/inv.Number 由 escapeChunks 保证实体完整；测试用 500 个 `A&B<"` 验证。
+- Seen 1× (2026-11-15).
+
+**测试断言必须隔离每次交互的调用记录，子串匹配要带边界。**
+- T07 测试初版复用 mock 的累积调用导致 answer 数偏多，且 "INV-2" 命中 "INV-2026-001" 造成误判。
+- 修复 commit：本分支 T07 实现提交（SHA 见 result.txt）。
+- Done right: mock 增加 reset() 并在断言前清空；用 "INV-2 "（带空格）做边界匹配；跨交互断言取最后一次调用。
+- Seen 1× (2026-11-15).

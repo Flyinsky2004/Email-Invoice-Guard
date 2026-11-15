@@ -1,0 +1,193 @@
+package telegram
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"email-invoice-guard/internal/core"
+)
+
+// DeliverOnce claims at most one due outbox job and delivers it. It returns
+// true when a job was claimed (whether it succeeded, failed or was skipped) and
+// false when the queue is empty. Delivery failures are persisted through
+// FailDelivery and do not surface as errors.
+func (b *Bot) DeliverOnce(ctx context.Context) (bool, error) {
+	delivery, err := b.store.ClaimDelivery(ctx, b.now(), deliveryLease)
+	if err != nil {
+		return false, fmt.Errorf("telegram: claim delivery: %w", err)
+	}
+	if delivery == nil {
+		return false, nil
+	}
+	b.deliver(ctx, delivery)
+	return true, nil
+}
+
+func (b *Bot) deliver(ctx context.Context, delivery *core.Delivery) {
+	parts, markup, invoiceID, ok := b.renderDelivery(ctx, delivery)
+	if !ok {
+		return
+	}
+
+	existing, err := b.store.DeliveryMessages(ctx, delivery.ID)
+	if err != nil {
+		b.failDelivery(ctx, delivery, false, "load delivered parts: "+sanitizeReason(err))
+		return
+	}
+	alreadySent := make(map[int]bool, len(existing))
+	all := make([]core.TelegramMessage, 0, len(existing)+len(parts))
+	for _, m := range existing {
+		alreadySent[m.Part] = true
+		all = append(all, m)
+	}
+
+	lastPart := len(parts) - 1
+	for i, text := range parts {
+		if alreadySent[i] {
+			continue
+		}
+		if err := b.limiter.wait(ctx, b.cfg.Telegram.ChatID); err != nil {
+			b.failDelivery(ctx, delivery, true, "canceled before send")
+			return
+		}
+		var kb *inlineKeyboard
+		if i == lastPart {
+			kb = markup
+		}
+		msg, err := b.api.sendMessage(ctx, b.cfg.Telegram.ChatID, text, kb)
+		if err != nil {
+			var ae *apiError
+			if errors.As(err, &ae) {
+				if ae.RetryAfter > 0 {
+					b.setDelay(ae.RetryAfter)
+				}
+				b.failDelivery(ctx, delivery, false, err.Error())
+			} else {
+				// Transport failures are ambiguous: the message may have been
+				// delivered. Retry with at-least-once semantics.
+				b.failDelivery(ctx, delivery, true, err.Error())
+			}
+			return
+		}
+		chatID := msg.Chat.ID
+		if chatID == 0 {
+			chatID = b.cfg.Telegram.ChatID
+		}
+		record := core.TelegramMessage{
+			ID:        core.NewID(),
+			OutboxID:  delivery.ID,
+			InvoiceID: invoiceID,
+			ChatID:    chatID,
+			MessageID: msg.MessageID,
+			Part:      i,
+			CreatedAt: b.now(),
+		}
+		if err := b.store.RecordTelegramMessage(ctx, record); err != nil {
+			// The part was acknowledged by Telegram. Persisting the ID failed,
+			// so a retry may duplicate this part; never fail the delivery here.
+			b.log.Error("telegram: record delivered part failed", "outbox", delivery.ID, "part", i, "error", err.Error())
+		}
+		all = append(all, record)
+	}
+
+	sctx, cancel := b.persistContext(ctx)
+	defer cancel()
+	if err := b.store.CompleteDelivery(sctx, delivery.ID, all, b.now()); err != nil {
+		b.log.Error("telegram: complete delivery failed", "outbox", delivery.ID, "error", err.Error())
+	}
+}
+
+// renderDelivery resolves the payload to its formatted parts. It returns false
+// when the job was skipped because its source is gone or a reminder is stale.
+func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (parts []string, markup *inlineKeyboard, invoiceID string, ok bool) {
+	payload := delivery.Payload
+	invoiceDelivery := payload.Kind == "invoice" || payload.Kind == "reminder" ||
+		(payload.InvoiceID != "" && payload.EmailID == "")
+	if invoiceDelivery {
+		inv, err := b.store.GetInvoice(ctx, payload.InvoiceID)
+		if err != nil {
+			b.skipDelivery(ctx, delivery, "invoice unavailable")
+			return nil, nil, "", false
+		}
+		if payload.Kind == "reminder" && inv.Status != core.PendingConfirmation {
+			// The invoice was paid or cancelled after the reminder was queued.
+			b.skipDelivery(ctx, delivery, "reminder is stale")
+			return nil, nil, "", false
+		}
+		account := b.deliveryAccount(ctx, inv.AccountID, core.Microsoft)
+		parts := FormatInvoice(inv, account)
+		if payload.Kind == "reminder" {
+			// Recompute against the current local date instead of trusting the
+			// scheduling-time payload text.
+			parts = appendEscapedLine(parts, b.reminderNote(inv))
+		}
+		return parts, b.invoiceKeyboard(inv), inv.ID, true
+	}
+
+	email, err := b.store.GetEmail(ctx, payload.EmailID)
+	if err != nil {
+		b.skipDelivery(ctx, delivery, "email unavailable")
+		return nil, nil, "", false
+	}
+	account := b.deliveryAccount(ctx, email.AccountID, email.ProviderType)
+	return FormatEmail(email, account), nil, "", true
+}
+
+// reminderNote renders the due-distance line at delivery time so a reminder
+// queued earlier still reports the correct number of days.
+func (b *Bot) reminderNote(inv core.Invoice) string {
+	if inv.DueDate == "" {
+		return "Reminder: due date unknown."
+	}
+	today := core.LocalDate(b.now(), b.location())
+	days, err := core.DaysUntil(inv.DueDate, today)
+	if err != nil {
+		return "Reminder: due " + string(inv.DueDate) + "."
+	}
+	switch {
+	case days > 0:
+		return fmt.Sprintf("Reminder: due in %d day(s) (%s).", days, inv.DueDate)
+	case days == 0:
+		return fmt.Sprintf("Reminder: due today (%s).", inv.DueDate)
+	default:
+		return fmt.Sprintf("Reminder: overdue by %d day(s) (%s).", -days, inv.DueDate)
+	}
+}
+
+// appendEscapedLine adds one escaped line to the final part when it fits,
+// otherwise it starts a new part.
+func appendEscapedLine(parts []string, line string) []string {
+	escaped := escape(line)
+	if n := len(parts); n > 0 && utf16Len(parts[n-1])+1+utf16Len(escaped) <= maxMessageUnits {
+		parts[n-1] += "\n" + escaped
+		return parts
+	}
+	return append(parts, escaped)
+}
+
+func (b *Bot) deliveryAccount(ctx context.Context, accountID string, provider core.ProviderType) core.MailAccount {
+	account, err := b.store.GetAccount(ctx, accountID)
+	if err != nil {
+		return core.MailAccount{ID: accountID, Provider: provider}
+	}
+	return account
+}
+
+func (b *Bot) failDelivery(ctx context.Context, delivery *core.Delivery, unknown bool, reason string) {
+	sctx, cancel := b.persistContext(ctx)
+	defer cancel()
+	if err := b.store.FailDelivery(sctx, delivery.ID, b.now(), unknown, sanitizeReason(errors.New(reason))); err != nil {
+		b.log.Error("telegram: persist delivery failure failed", "outbox", delivery.ID, "error", err.Error())
+	}
+	b.log.Warn("telegram: delivery attempt failed", "outbox", delivery.ID, "unknown", unknown, "reason", sanitizeReason(errors.New(reason)))
+}
+
+func (b *Bot) skipDelivery(ctx context.Context, delivery *core.Delivery, reason string) {
+	sctx, cancel := b.persistContext(ctx)
+	defer cancel()
+	if err := b.store.SkipDelivery(sctx, delivery.ID, b.now()); err != nil {
+		b.log.Error("telegram: persist delivery skip failed", "outbox", delivery.ID, "error", err.Error())
+	}
+	b.log.Warn("telegram: delivery skipped", "outbox", delivery.ID, "reason", reason)
+}
