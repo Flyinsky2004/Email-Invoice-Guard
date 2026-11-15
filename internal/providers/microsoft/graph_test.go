@@ -576,6 +576,7 @@ func TestSyncUnauthorizedRefreshInvalidGrant(t *testing.T) {
 
 func TestSyncMapsAttachmentMetadataWithoutDownloading(t *testing.T) {
 	var attachmentQuery string
+	var attachmentPath string
 	var server *httptest.Server
 	source, _, srv := newSourceWithServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -583,11 +584,24 @@ func TestSyncMapsAttachmentMetadataWithoutDownloading(t *testing.T) {
 			message := sampleMessage("imm-1", time.Now().UTC())
 			message["hasAttachments"] = true
 			writeJSON(w, deltaResponse("", server.URL+"/v1.0/delta", message))
-		case strings.Contains(r.URL.Path, "/me/messages/imm-1"):
-			attachmentQuery = r.URL.RawQuery
-			writeJSON(w, map[string]any{"attachments": []map[string]any{{
-				"id": "att-1", "name": "invoice.pdf", "contentType": "application/pdf", "size": 1234,
-			}}})
+		case strings.HasSuffix(r.URL.Path, "/me/messages/imm-1/attachments"):
+			switch r.URL.Query().Get("page") {
+			case "":
+				attachmentQuery = r.URL.RawQuery
+				attachmentPath = r.URL.Path
+				writeJSON(w, map[string]any{
+					"value": []map[string]any{{
+						"id": "att-1", "name": "invoice.pdf", "contentType": "application/pdf", "size": 1234,
+					}},
+					"@odata.nextLink": server.URL + "/v1.0/me/messages/imm-1/attachments?page=2",
+				})
+			case "2":
+				writeJSON(w, map[string]any{"value": []map[string]any{{
+					"id": "att-2", "name": "receipt.png", "contentType": "image/png", "size": 5678,
+				}}})
+			default:
+				http.NotFound(w, r)
+			}
 		default:
 			http.NotFound(w, r)
 		}
@@ -596,19 +610,40 @@ func TestSyncMapsAttachmentMetadataWithoutDownloading(t *testing.T) {
 
 	batch, err := source.Sync(context.Background(), testAccount("acc-1"), testFolder("inbox"), core.SyncCursor{})
 	requireNoError(t, err)
-	if len(batch.Emails) != 1 || len(batch.Emails[0].Attachments) != 1 {
+	if len(batch.Emails) != 1 || len(batch.Emails[0].Attachments) != 2 {
 		t.Fatalf("attachments = %+v", batch.Emails)
 	}
-	attachment := batch.Emails[0].Attachments[0]
-	if attachment.ID != "att-1" || attachment.Filename != "invoice.pdf" ||
-		attachment.ContentType != "application/pdf" || attachment.Size != 1234 {
-		t.Fatalf("attachment = %+v", attachment)
+	first, second := batch.Emails[0].Attachments[0], batch.Emails[0].Attachments[1]
+	if first.Filename != "invoice.pdf" || first.ContentType != "application/pdf" || first.Size != 1234 {
+		t.Fatalf("first attachment = %+v", first)
 	}
-	if !strings.Contains(attachmentQuery, "expand=attachments") {
+	if second.Filename != "receipt.png" || second.ContentType != "image/png" || second.Size != 5678 {
+		t.Fatalf("second attachment = %+v", second)
+	}
+	if first.ID != attachmentID("acc-1", "imm-1", "att-1") {
+		t.Fatalf("first id = %q", first.ID)
+	}
+	if second.ID != attachmentID("acc-1", "imm-1", "att-2") {
+		t.Fatalf("second id = %q", second.ID)
+	}
+	if len(first.ID) != 32 || first.ID == second.ID {
+		t.Fatalf("attachment ids are not scoped 32-hex values: %q %q", first.ID, second.ID)
+	}
+	if attachmentPath != "/v1.0/me/messages/imm-1/attachments" {
+		t.Fatalf("attachment path = %q", attachmentPath)
+	}
+	if !strings.Contains(attachmentQuery, "select=id%2Cname%2CcontentType%2Csize") &&
+		!strings.Contains(attachmentQuery, "select=id,name,contentType,size") {
 		t.Fatalf("query = %q", attachmentQuery)
 	}
-	if strings.Contains(attachmentQuery, "contentBytes") {
-		t.Fatal("attachment bytes must never be requested")
+	if strings.Contains(attachmentQuery, "contentBytes") || strings.Contains(attachmentQuery, "expand=") {
+		t.Fatalf("query must only request metadata: %q", attachmentQuery)
+	}
+
+	again, err := source.Sync(context.Background(), testAccount("acc-1"), testFolder("inbox"), core.SyncCursor{})
+	requireNoError(t, err)
+	if again.Emails[0].Attachments[0].ID != first.ID {
+		t.Fatal("attachment id is not deterministic across syncs")
 	}
 }
 

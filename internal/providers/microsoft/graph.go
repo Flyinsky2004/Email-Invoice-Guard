@@ -398,16 +398,28 @@ func (s *Source) initialDeltaURL(folderID string) string {
 	return s.graphURL("/me/mailFolders/" + url.PathEscape(folderID) + "/messages/delta?$select=" + selectFields + "&$top=50")
 }
 
+// fetchAttachments lists attachment metadata through the paginated
+// attachments navigation property. $expand would silently drop later pages;
+// contentBytes is never requested.
 func (s *Source) fetchAttachments(ctx context.Context, account core.MailAccount, messageID string) ([]graphAttachment, error) {
-	raw := s.graphURL("/me/messages/" + url.PathEscape(messageID) +
-		"?$select=id&$expand=attachments($select=id,name,contentType,size)")
-	var response struct {
-		Attachments []graphAttachment `json:"attachments"`
+	next := s.graphURL("/me/messages/" + url.PathEscape(messageID) +
+		"/attachments?$select=id,name,contentType,size")
+	attachments := make([]graphAttachment, 0, 4)
+	for page := 0; next != ""; page++ {
+		if page >= 20 {
+			return nil, fmt.Errorf("%w: attachment pagination limit", core.ErrInvalid)
+		}
+		var response struct {
+			NextLink string            `json:"@odata.nextLink"`
+			Value    []graphAttachment `json:"value"`
+		}
+		if err := s.graphGet(ctx, account, next, &response); err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, response.Value...)
+		next = response.NextLink
 	}
-	if err := s.graphGet(ctx, account, raw, &response); err != nil {
-		return nil, err
-	}
-	return response.Attachments, nil
+	return attachments, nil
 }
 
 func (s *Source) normalize(account core.MailAccount, folder core.MailFolder, message graphMessage, baselineAt time.Time, baselinePhase bool) core.NormalizedEmail {
@@ -428,7 +440,7 @@ func (s *Source) normalize(account core.MailAccount, folder core.MailFolder, mes
 	attachments := make([]core.Attachment, 0, len(message.Attachments))
 	for _, attachment := range message.Attachments {
 		attachments = append(attachments, core.Attachment{
-			ID:          attachment.ID,
+			ID:          attachmentID(account.ID, message.ID, attachment.ID),
 			Filename:    attachment.Name,
 			ContentType: attachment.ContentType,
 			Size:        attachment.Size,
@@ -472,6 +484,15 @@ func (s *Source) normalize(account core.MailAccount, folder core.MailFolder, mes
 		email.SyncMetadata.Historical = received.Before(baselineAt.Add(-24 * time.Hour))
 	}
 	return email
+}
+
+// attachmentID derives a deterministic account-scoped 32-hex identifier so
+// Graph attachment ids from different accounts cannot collide in storage.
+// The Graph id itself is not retained because attachments are never
+// downloaded in this application.
+func attachmentID(accountID, messageID, graphID string) string {
+	sum := sha256.Sum256([]byte(accountID + "\x00" + messageID + "\x00" + graphID))
+	return hex.EncodeToString(sum[:16])
 }
 
 func fingerprint(message graphMessage, received time.Time, text string) string {
