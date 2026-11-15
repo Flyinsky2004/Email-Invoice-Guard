@@ -153,3 +153,57 @@
 - 修复 commit：本次 T04 修复提交。
 - Done right: 捕获组包含完整优惠方式词组（如 `(.*?Discount)`），测试断言精确样例值。
 - Seen 1× (2026-11-15).
+
+**Telegram 发送响应不可解析或缺少 message_id 时必须记为 UNKNOWN，不能记为确定失败或成功。**
+- T07 初版 api.go 把 HTTP 200 但响应体损坏当作确定 apiError，把空 result 当成功；若消息实际已送达会漏记 ID 并误判状态。Codex 早期审查指出。
+- 修复 commit：本分支 T07 实现提交（SHA 见 result.txt）。
+- Done right: call 对 200 无法解析/result 解码失败返回 transportError；sendMessage 校验 MessageID != 0；delivery 仅把 apiError 记为已知失败，其余为 UNKNOWN。
+- Seen 1× (2026-11-15).
+
+**不可信长文本不得拼进 writeHTML 标签，必须先转义再按 rune 分块。**
+- T07 初版 FormatInvoice 用 "<b>Invoice "+escape(Number)+"</b>"，超长 Number 会触发按 rune 拆分并可能拆断 HTML 实体。Codex 早期审查指出。
+- 修复 commit：本分支 T07 实现提交（SHA 见 result.txt）。
+- Done right: 固定标签单独 writeHTML("<b>Invoice</b>")，内容走 writeRaw/inv.Number 由 escapeChunks 保证实体完整；测试用 500 个 `A&B<"` 验证。
+- Seen 1× (2026-11-15).
+
+**测试断言必须隔离每次交互的调用记录，子串匹配要带边界。**
+- T07 测试初版复用 mock 的累积调用导致 answer 数偏多，且 "INV-2" 命中 "INV-2026-001" 造成误判。
+- 修复 commit：本分支 T07 实现提交（SHA 见 result.txt）。
+- Done right: mock 增加 reset() 并在断言前清空；用 "INV-2 "（带空格）做边界匹配；跨交互断言取最后一次调用。
+- Seen 1× (2026-11-15).
+
+**可信链接校验必须对齐真实 fixture 的 host+path+query，不能只校验 host。**
+- T07 初版把 RFCHOST 信任域写成 rfchost.com 且只校验 host，真实账单是 https://my.rfchost.com/viewinvoice.php?id=143058；会漏掉合法按钮或放行伪造路径/redirect 参数。正式验收退修指出。
+- 修复 commit：本分支 T07 验收修复提交（SHA 见 result.txt）。
+- Done right: 固定 my.rfchost.com + /viewinvoice.php + 单一数字 id；拒绝额外 query、重复 id、userinfo、非 443 端口、fragment；用精确 fixture 与恶意 redirect 用例断言。
+- Seen 1× (2026-11-15).
+
+**限流等待后、每次外部发送前必须重新校验业务状态。**
+- T07 初版只在渲染前检查提醒是否 pending，限流等待期间用户确认支付后仍会发出过期提醒。正式验收退修指出。
+- 修复 commit：本分支 T07 验收修复提交（SHA 见 result.txt）。
+- Done right: 在 limiter.wait 之后、sendMessage 之前重新 GetInvoice；非 pending 立即 SkipDelivery；测试用可控 sleep 模拟 queued→wait→confirm→no send。
+- Seen 1× (2026-11-15).
+
+**长耗时命令不得在轮询 goroutine 内同步执行，后台任务需可取消并纳入退出等待。**
+- T07 初版 /sync 同步执行最长 2 分钟，阻塞 polling 导致支付确认延迟。正式验收退修指出。
+- 修复 commit：本分支 T07 验收修复提交（SHA 见 result.txt）。
+- Done right: /sync 立即回应并在后台 goroutine 执行，重复触发拒绝；ctx 取消传播到 SyncAll，Run 退出时有界等待后台任务结束。
+- Seen 1× (2026-11-15).
+
+**用户可见时间必须使用动态配置时区并显式标注偏移，不得硬编码 UTC。**
+- T07 初版 FormatEmail 强制 ReceivedAt.UTC()，忽略 cfg.Timezone 与动态 timezone 设置。正式验收退修指出。
+- 修复 commit：本分支 T07 验收修复提交（SHA 见 result.txt）。
+- Done right: 导出 FormatEmail/FormatInvoice 默认 Asia/Taipei，Bot 使用私有 formatEmailAt/formatInvoiceAt 读取动态 timezone；时间格式带 MST 与 -07:00 偏移；账单确认时间同样标注时区。
+- Seen 1× (2026-11-15).
+
+**只有 ErrNotFound 才能标记 SKIPPED；其他存储读取错误必须 FailDelivery 重试。**
+- T07 renderDelivery 初版对 GetInvoice/GetEmail 任意错误都 SkipDelivery，数据库 busy/代理错误会永久丢弃邮件；GetAccount 暂时失败也被静默降级。验收补充指出。
+- 修复 commit：本分支 T07 补充修复提交（SHA 见 result.txt）。
+- Done right: errors.Is(err, core.ErrNotFound) 才 SkipDelivery，其余 FailDelivery(unknown=false)；GetAccount 暂时失败同样重试，仅 NotFound 用最小账户继续；测试覆盖 invoice/email/account 三类 transient read。
+- Seen 1× (2026-11-15).
+
+**同一账单的增强通知键盘必须指向触发本次通知的邮件，而不是账单首封。**
+- T07 初版 keyboard 总用 inv.SourceEmailID，同一账单第二封邮件点“原始邮件”看到的是首封全文。验收补充指出。
+- 修复 commit：本分支 T07 补充修复提交（SHA 见 result.txt）。
+- Done right: clone invoice 后用 payload.EmailID 覆盖 SourceEmailID 再生成 keyboard，不修改持久账单；测试 duplicate invoice different email 断言按钮指向第二封且能取到第二封全文。
+- Seen 1× (2026-11-15).
