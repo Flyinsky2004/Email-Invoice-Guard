@@ -57,3 +57,51 @@
 - 修复 commit: b8c5980d5afea5d30451eb1a2bd7063e95893488（next 有效 end >= cur end 时成对更新 start/end/LastInvoiceID 与描述字段；旧账单只补空字段）。
 - Done right: TestAssetRenewalKeepsLatestPeriodAndOlderReplayCannotOverwrite（2026-10/11 → 2026-11/12，再回放 2026-09）。
 - Seen 1× (2026-11-15).
+
+**OAuth 回调写入账号与凭据必须同事务，避免半状态账号。**
+- T01 首版 CompleteAuthorization 顺序 SaveAccount+PutCredential；repo 为 Store 时凭据写失败会留下无凭据账号，后续同步持续失败。
+- 修复 commit：dcf6c3c。
+- Done right: 检测 core.Store 并在 Transaction 内同时写 account+credential，失败整体回滚；fakeStore 回归测试断言回滚后 0 账号。
+- Seen 1× (2026-11-15).
+
+**同 provider 同地址重新授权必须复用原 accountID，禁止 NewID 造成唯一键冲突。**
+- T01 首版每次授权 NewID；移除后重加或同地址重授权会触发 UNIQUE(provider,address) 冲突并可能割裂历史账单。
+- 修复 commit：dcf6c3c。
+- Done right: ListAccounts 按 provider+address 大小写不敏感查找并复用 ID/CreatedAt，仅同 owner 可重授权，异 owner 返回 ErrUnauthorized。
+- Seen 1× (2026-11-15).
+
+**服务器 Retry-After 必须完整遵守，不得截断后提前重试。**
+- T01 首版把 120s 截到 30s，违反服务端退避要求并可能加剧限流。
+- 修复 commit：dcf6c3c。
+- Done right: header 值原样等待，仅本地指数退避设上限；用 ctx 取消控制长等待，回归测试断言 120s 不被截断且取消前不重试。
+- Seen 1× (2026-11-15).
+
+**HTTP 重定向必须锁定产生该请求的 origin，不能使用多 origin 联合白名单。**
+- T01 首版允许 Graph/Authority 两 origin 互相重定向，token 端点可能把表单请求导向 Graph origin。
+- 修复 commit：dcf6c3c。
+- Done right: CheckRedirect 比较 via[0] 与目标 origin，跨 origin 直接拒绝；回归测试覆盖 token→Graph 与 Graph→authority 均 0 命中。
+- Seen 1× (2026-11-15).
+
+**Graph v1.0 属性名必须以官方资源文档为准，禁止凭猜测 select 不存在的字段。**
+- T01 首版 ListFolders 使用 $select=id,displayName,wellKnownName；Graph v1.0 mailFolder 无 wellKnownName 属性，真实请求会被拒绝且角色映射失效。
+- 修复 commit：f962f0b。
+- Done right: 通过 /me/mailFolders/{well-known}?$select=id 解析角色 ID，再列真实字段并递归 childFolders；测试断言请求不含 wellKnownName，覆盖中文收件箱与嵌套自定义文件夹。
+- Seen 1× (2026-11-15).
+
+**成功响应不得设置固定字节上限；只有错误小响应可以限流。**
+- T01 首版对 Graph 成功响应使用 8MiB LimitReader，合法大正文会被截断并导致 JSON 解码失败、同步永久卡住。
+- 修复 commit：f962f0b。
+- Done right: 成功响应流式解码不设上限，token/错误响应保留 1MiB 限制；>8MiB 正文回归测试断言首尾完整。
+- Seen 1× (2026-11-15).
+
+**HTML 转文本应使用 HTML 解析器而非正则剥离标签。**
+- T01 首版正则剥离标签会丢失未知或畸形标签内的有效文本。
+- 修复 commit：f962f0b。
+- Done right: 使用 x/net/html 遍历 DOM，跳过 script/style/head，块级元素换行并归一空白；测试覆盖未知标签、中文与实体。
+- Seen 1× (2026-11-15).
+
+**集合导航属性不得用 $expand 代替可分页端点，否则会静默丢项**
+- T01 首版 fetchAttachments 使用 $expand=attachments，忽略 @odata.nextLink，附件超过一页时会丢失文件名与数量。
+- 修复 commit：4fc35ed。
+- Done right: GET /me/messages/{id}/attachments?$select=id,name,contentType,size 遍历 nextLink，不请求 contentBytes；两页回归测试；附件 ID 用 account+message+graphID 哈希生成 32-hex，避免跨账号碰撞。
+- Seen 1× (2026-11-15).
