@@ -26,13 +26,20 @@ func NewRFCHOST() core.InvoiceParser { return &rfchostParser{} }
 func (p *rfchostParser) Vendor() string  { return rfchostVendor }
 func (p *rfchostParser) Version() string { return rfchostVersion }
 
-// Match requires both a conservative RFCHOST sender domain and recognizable
-// invoice structure; a keyword alone never selects this parser.
+// Match accepts mail from an RFCHOST sender, or a forwarded copy that still
+// carries a trusted RFCHOST invoice URL. A keyword alone never selects this
+// parser: forwarded mail must prove merchant identity through the exact
+// invoice URL, and Parse still validates the URL id against the invoice
+// number.
 func (p *rfchostParser) Match(email core.NormalizedEmail) bool {
-	if !rfchostSender(email.From.Address) {
+	text := p.extractText(email)
+	if !hasInvoiceStructure(text) {
 		return false
 	}
-	return hasInvoiceStructure(p.extractText(email))
+	if rfchostSender(email.From.Address) {
+		return true
+	}
+	return hasTrustedInvoiceURL(text)
 }
 
 // Parse returns a PENDING_CONFIRMATION invoice only when every mandatory field

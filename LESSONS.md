@@ -327,3 +327,9 @@
 - 修复 commit：待定位（本次解析器修复提交）。
 - Done right: itemHeaderRe 允许 hostname 后同行携带 "(start - end) price"，Promotional Code 行用 inlineDiscountRe 拆出折扣子句；新增 TestParseRealTemplateInlineItemLine / TestParseRealTemplateHTML 直接断言真实模板的 item 字段，同时保留拆行 fixture 覆盖旧格式。
 - Seen 1× (2026-11-16).
+
+**解析器不能只靠发件人域名识别商户，转发件必须能用正文中的精确可信商户链接证明身份。**
+- 用户把 RFCHOST 账单转发到 Outlook（From: w2084151024@gmail.com）后（2026-11-16）：Match 只检查 rfchostSender，转发件不匹配，账单未创建，Telegram“待确认账单”显示未找到内容。
+- 修复 commit：待定位（本次解析器修复提交）。
+- Done right: Match 接受“发件人域名”或“正文含精确 https://my.rfchost.com/viewinvoice.php?id=<数字>”二选一，Parse 继续校验 URL id 与 Invoice # 一致；测试覆盖转发真实模板、无可信链接、仿冒域名三种情况。
+- Seen 1× (2026-11-16).

@@ -178,6 +178,18 @@ func normalizePaymentMethod(raw string) string {
 	return v
 }
 
+// hasTrustedInvoiceURL reports whether text carries an exact RFCHOST invoice
+// URL. It is the identity anchor for forwarded mail whose sender is no longer
+// the merchant domain.
+func hasTrustedInvoiceURL(text string) bool {
+	for _, raw := range urlTokenRe.FindAllString(text, -1) {
+		if trustedInvoiceURL(strings.TrimRight(raw, ".,;:!?)]}'\"`")) {
+			return true
+		}
+	}
+	return false
+}
+
 func trustedInvoiceURL(raw string) bool {
 	if !core.TrustedInvoiceURL(raw, rfchostHost) {
 		return false

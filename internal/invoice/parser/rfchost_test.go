@@ -77,11 +77,40 @@ func TestMatchFixture(t *testing.T) {
 	}
 }
 
-func TestMatchRequiresRFCHOSTSender(t *testing.T) {
+func TestMatchForwardedInvoiceWithTrustedURL(t *testing.T) {
+	email := fixtureEmail(t)
+	email.From = core.Address{Name: "Forwarder", Address: "w2084151024@gmail.com"}
+	if !NewRFCHOST().Match(email) {
+		t.Fatal("forwarded invoice with a trusted RFCHOST URL should match")
+	}
+	inv, err := NewRFCHOST().Parse(email)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inv.Number != "143058" || inv.URL != "https://my.rfchost.com/viewinvoice.php?id=143058" {
+		t.Fatalf("invoice = %q / %q", inv.Number, inv.URL)
+	}
+}
+
+func TestMatchForeignSenderWithoutTrustedURL(t *testing.T) {
 	email := fixtureEmail(t)
 	email.From = core.Address{Address: "billing@gmail.com"}
+	email.TextBody = strings.Replace(fixtureText(t),
+		"https://my.rfchost.com/viewinvoice.php?id=143058",
+		"https://evil.example.com/viewinvoice.php?id=143058", 1)
 	if NewRFCHOST().Match(email) {
-		t.Fatal("non-RFCHOST sender must not match")
+		t.Fatal("foreign sender without a trusted RFCHOST URL must not match")
+	}
+}
+
+func TestMatchForeignSenderWithLookalikeHost(t *testing.T) {
+	email := fixtureEmail(t)
+	email.From = core.Address{Address: "billing@gmail.com"}
+	email.TextBody = strings.Replace(fixtureText(t),
+		"https://my.rfchost.com/viewinvoice.php?id=143058",
+		"https://my.rfchost.com.evil.example/viewinvoice.php?id=143058", 1)
+	if NewRFCHOST().Match(email) {
+		t.Fatal("lookalike host must not match")
 	}
 }
 
@@ -119,6 +148,7 @@ func TestMatchFallsBackToHTML(t *testing.T) {
 func TestParseNotMatched(t *testing.T) {
 	email := fixtureEmail(t)
 	email.From = core.Address{Address: "billing@gmail.com"}
+	email.TextBody = "Hello, this is a friendly message."
 	inv, err := NewRFCHOST().Parse(email)
 	if !errors.Is(err, core.ErrNoMatch) {
 		t.Fatalf("err = %v, want ErrNoMatch", err)
@@ -500,6 +530,23 @@ func TestParseRealTemplateInlineItemLine(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	assertRealTemplateInvoice(t, inv)
+}
+
+func TestParseForwardedRealTemplate(t *testing.T) {
+	email := fixtureEmail(t)
+	email.From = core.Address{Name: "王吉颖", Address: "w2084151024@gmail.com"}
+	email.TextBody = realTemplateText
+	if !NewRFCHOST().Match(email) {
+		t.Fatal("forwarded real template should match through its trusted URL")
+	}
+	inv, err := NewRFCHOST().Parse(email)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertRealTemplateInvoice(t, inv)
+	if inv.URL != "https://my.rfchost.com/viewinvoice.php?id=143058" {
+		t.Fatalf("url = %q", inv.URL)
+	}
 }
 
 func TestParseRealTemplateHTML(t *testing.T) {
