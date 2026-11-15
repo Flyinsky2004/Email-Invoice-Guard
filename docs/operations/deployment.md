@@ -7,7 +7,7 @@
 - 一台有公网 IP 的 Linux 主机（Debian 12+ 或任意支持 Docker 的发行版）。
 - 一个解析到该主机的域名，例如 `invoice.example.com`。
 - 放行 80/443（ACME 与 HTTPS）。应用端口 8080 **不要**对外暴露。
-- 可选：Telegram 机器人、Microsoft 应用、QQ 授权码（见 `docs/setup/`）。
+- Telegram Bot Token、目标 Chat ID、管理员 User ID；Microsoft 应用及 QQ 授权码按需要配置（见 `docs/setup/`）。
 
 ## 2. 生成加密密钥
 
@@ -23,7 +23,10 @@ openssl rand -base64 32
 也可以改用密钥文件（权限必须为 `0600`）：
 
 ```bash
-install -m 0600 /dev/stdin /etc/invoice-guard/encryption.key <<<"$(openssl rand -base64 32)"
+sudo install -d -m 0750 -o 10001 -g 10001 /etc/invoice-guard
+openssl rand -base64 32 | sudo tee /etc/invoice-guard/encryption.key >/dev/null
+sudo chown 10001:10001 /etc/invoice-guard/encryption.key
+sudo chmod 0600 /etc/invoice-guard/encryption.key
 ```
 
 然后在 `.env` 中设置 `ENCRYPTION_KEY_FILE=/etc/invoice-guard/encryption.key`，并确保容器可读（只读挂载）。`ENCRYPTION_KEY` 与 `ENCRYPTION_KEY_FILE` 互斥。
@@ -31,6 +34,7 @@ install -m 0600 /dev/stdin /etc/invoice-guard/encryption.key <<<"$(openssl rand 
 ## 3. Docker Compose 部署
 
 ```bash
+umask 077
 cp .env.example .env
 # 编辑 .env：PUBLIC_BASE_URL、DOMAIN、TELEGRAM_*、ENCRYPTION_KEY 等
 docker compose -f deployments/docker-compose.yml up -d --build
@@ -48,7 +52,7 @@ docker compose -f deployments/docker-compose.yml ps
 
 - `app` **不发布端口**，只能经 Caddy 访问。
 - `backend` 使用固定网段 `10.89.0.0/24`；`TRUSTED_PROXY_CIDRS` 必须与之匹配。
-- SQLite 数据位于命名卷 `sqlite-data`，挂载到 `/data`，属主为 10001。
+- SQLite 数据位于 `SQLITE_VOLUME_NAME` 指定的卷（默认 `email-invoice-guard_sqlite-data`），挂载到 `/data`，属主为 10001。恢复时可切换到新卷并保留旧卷。
 - 健康检查使用镜像内的 `--healthcheck`，无需安装 curl。
 - `stop_grace_period: 30s` 与应用内 `SHUTDOWN_TIMEOUT=15s` 配合，保证优雅退出。
 
@@ -68,7 +72,8 @@ sudo apt-get update
 sudo apt-get install -y ca-certificates tzdata
 sudo useradd --system --uid 10001 --home /var/lib/invoice-guard --shell /usr/sbin/nologin invoice-guard
 
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /usr/local/bin/invoice-guard ./cmd/server
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o ./bin/invoice-guard ./cmd/server
+sudo install -m 0755 ./bin/invoice-guard /usr/local/bin/invoice-guard
 sudo install -d -o invoice-guard -g invoice-guard -m 0750 /var/lib/invoice-guard
 ```
 
@@ -106,6 +111,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+UMask=0077
 ReadWritePaths=/var/lib/invoice-guard
 
 [Install]
@@ -146,3 +152,5 @@ curl -fsS https://invoice.example.com/healthz
 ```
 
 健康响应只包含 `{"status":"ok"}` 或 `{"status":"unavailable"}`，不泄露任何内部信息。
+
+生产镜像固定为 Go 1.27.3 / Alpine 3.24.4 / Caddy 2.11.9。Docker 构建阶段会在目标 Linux 平台运行不依赖真实凭证的完整测试。密钥文件模式需要将对应文件只读挂载到容器内，并由 uid 10001 读取；默认 Compose 使用环境变量密钥。

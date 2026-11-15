@@ -156,7 +156,11 @@ func (b *Bot) commandAccounts(ctx context.Context) (reply, error) {
 		if !a.Enabled {
 			state = "disabled"
 		}
-		lines = append(lines, fmt.Sprintf("• %s (%s, %s) id=%s", a.Address, a.Provider, state, a.ID))
+		line := fmt.Sprintf("• %s (%s, %s) id=%s", a.Address, a.Provider, state, a.ID)
+		if a.LastError != "" {
+			line += " sync_error=" + a.LastError
+		}
+		lines = append(lines, line)
 	}
 	return renderList("Accounts", lines, nil), nil
 }

@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+!.env.example
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.key
+bin
+server
+backup
+backups
+.worktrees
+.omc
+.claude
+.DS_Store

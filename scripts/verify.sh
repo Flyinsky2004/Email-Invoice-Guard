@@ -2,7 +2,7 @@
 # Reproducible, credential-free local verification. Docker is verified separately.
 set -eu
 cd "$(dirname "$0")/.."
-unformatted=$(gofmt -l $(rg --files -g '*.go' -g '!vendor/**'))
+unformatted=$(gofmt -l cmd internal tests)
 if [ -n "$unformatted" ]; then
   printf '%s\n' "$unformatted"
   exit 1

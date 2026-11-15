@@ -1,110 +1,80 @@
-# 备份与恢复
+# SQLite 备份与恢复
 
-数据库是 SQLite（WAL 模式）。**不要**在服务运行时直接 `cp` 主数据库文件：WAL 中可能还有未合并的事务，复制结果可能不一致或损坏。
+数据库启用 WAL。运行时只复制主数据库文件可能漏掉已提交事务。使用内置在线快照命令，或停机复制整个数据卷。密钥与数据库分开保护；备份邮件正文同样属于私有数据。
 
-## 1. 需要备份什么
+## 在线快照
 
-| 内容 | 位置 | 说明 |
-|---|---|---|
-| SQLite 数据库 | `/data/invoice-guard.db`（含 `-wal`、`-shm`） | 邮件、账单、游标、outbox、加密后的凭据 |
-| 加密密钥 | `ENCRYPTION_KEY` 或 `ENCRYPTION_KEY_FILE` | 丢失后无法解密已保存的邮箱凭据 |
-| `.env` | 部署目录 | 含令牌等敏感配置，需加密保存 |
-| Caddy 证书 | 命名卷 `caddy-data` | 可选；丢失后会自动重新签发 |
-
-**密钥必须与数据库分开存放**：只拿到数据库无法恢复账号；只拿到密钥也无法恢复数据。
-
-## 2. 一致性备份
-
-### 方式 A：停机复制（最稳妥）
+在项目根目录执行，命令使用容器已有配置，不打印凭据：
 
 ```bash
+umask 077
+mkdir -p backup
+eig_backup_name="guard-$(date -u +%Y%m%dT%H%M%SZ).db"
+docker compose -f deployments/docker-compose.yml exec -T app \
+  /app/server --backup "/data/$eig_backup_name"
+eig_app_container="$(docker compose -f deployments/docker-compose.yml ps -q app)"
+docker cp "$eig_app_container:/data/$eig_backup_name" "backup/$eig_backup_name"
+chmod 0600 "backup/$eig_backup_name"
+```
+
+`--backup` 使用 SQLite `VACUUM INTO`，包含快照时已提交的 WAL 数据，目标权限为 `0600`。已有目标一律拒绝覆盖；失败会清理本次创建的未完成文件。命令默认两分钟超时，成功输出 `backup completed`。容器中的快照可在确认外部副本安全后另行清理。
+
+裸机使用同样的程序与服务配置：
+
+```bash
+# 在已加载服务环境、且有数据库读写权限的终端中：
+invoice-guard --backup /安全的备份目录/guard-新时间戳.db
+invoice-guard --check-db
+```
+
+`--check-db` 检查 SQLite 完整性、外键与启用账号的凭据解密，不输出凭据。服务配置仍须有效；缺失授权或错误密钥会返回非零退出码。
+
+## 停机归档
+
+需要保存整个数据目录时：
+
+```bash
+umask 077
+mkdir -p backup
 docker compose -f deployments/docker-compose.yml stop app
-docker run --rm -v email-invoice-guard_sqlite-data:/data:ro -v "$PWD/backup:/backup" alpine \
-  sh -c 'tar czf /backup/guard-$(date +%Y%m%d-%H%M%S).tar.gz -C /data .'
+docker run --rm \
+  -v email-invoice-guard_sqlite-data:/data:ro \
+  -v "$PWD/backup:/backup" alpine:3.24.4 \
+  sh -ec 'umask 077; tar czf /backup/guard-$(date -u +%Y%m%dT%H%M%SZ).tar.gz -C /data .'
 docker compose -f deployments/docker-compose.yml start app
 ```
 
-### 方式 B：在线备份（WAL 安全）
+使用自定义 `SQLITE_VOLUME_NAME` 时，将命令中的默认卷名替换为实际卷名。应用容器采用非 root 和只读根文件系统，无需在其中安装 SQLite 工具。
 
-使用 SQLite 的在线备份 API（`.backup`）可在运行中取得一致快照：
+## 分开保护密钥
 
-```bash
-docker compose -f deployments/docker-compose.yml exec app \
-  sh -c 'apk add --no-cache sqlite >/dev/null 2>&1 || true'  # 仅当镜像内无 sqlite3 时
-# 若镜像未包含 sqlite3，请在宿主机对只读副本执行，或优先使用方式 A
-```
+保存数据库快照、原加密密钥及部署配置。`.env` 含 Bot Token 等信息，应加密备份；密钥存于不同位置，保留多代快照。密钥丢失后无法从数据库恢复邮箱凭据。修改密钥不会自动重新加密旧凭据。
 
-> 应用内部的 `storage.Backup(ctx, destination)` 也提供一致性快照能力；当前版本未暴露为独立 CLI 子命令，因此运维侧推荐方式 A。
+## 恢复到新卷
 
-### 方式 C：裸机部署
+保留原卷，恢复到一个新命名卷，避免覆盖当前数据。以下示例使用在线 `.db` 快照；先将文件名替换为实际备份名。
 
 ```bash
-sudo systemctl stop invoice-guard
-sudo tar czf /backup/guard-$(date +%Y%m%d-%H%M%S).tar.gz -C /var/lib/invoice-guard .
-sudo systemctl start invoice-guard
+docker compose -f deployments/docker-compose.yml stop app
+docker volume create email-invoice-guard-restored-20261115
+docker run --rm \
+  -v email-invoice-guard-restored-20261115:/data \
+  -v "$PWD/backup:/backup:ro" alpine:3.24.4 \
+  sh -ec 'test ! -e /data/invoice-guard.db; cp /backup/guard-实际时间戳.db /data/invoice-guard.db; chown -R 10001:10001 /data; chmod 0600 /data/invoice-guard.db'
 ```
 
-## 3. 备份密钥
+若恢复完整 `.tar.gz` 归档，在新卷中解压归档并设置属主，保留归档中的主文件、WAL 与 SHM 为同一组；不要混用不同时间点的文件。
+
+在 `.env` 中将 `SQLITE_VOLUME_NAME` 改为新卷名，并恢复与快照匹配的原加密密钥。然后先检查，再启动：
 
 ```bash
-# 密钥文件方式
-sudo install -m 0600 /etc/invoice-guard/encryption.key /backup/encryption.key
-
-# 环境变量方式：从 .env 中提取后单独加密保存
-grep '^ENCRYPTION_KEY=' .env > /backup/encryption-key.env
-chmod 0600 /backup/encryption-key.env
+docker compose -f deployments/docker-compose.yml run --rm --no-deps app --check-db
+docker compose -f deployments/docker-compose.yml up -d --force-recreate app
+docker compose -f deployments/docker-compose.yml exec -T app /app/server --healthcheck
 ```
 
-建议对备份整体再做一次加密（如 `age`、`gpg`），并异地保存多代副本。
+检查应输出 `database integrity, foreign keys and credential decryption: ok`。检查失败时保留新卷以便排查，并将 `.env` 的卷名切回原卷后重新创建 app。原卷始终保留，不执行清空命令。
 
-## 4. 恢复
+恢复后在 Bot 执行 `/status`、`/accounts` 与 `/sync`。同一天的提醒唯一约束、已确认状态和同步游标随快照恢复。过期投递租约按 `UNKNOWN` 重试，属于至少一次语义；恢复较旧快照时，快照之后已在外部发送的消息可能再次发送。
 
-1. 停止服务：
-
-   ```bash
-   docker compose -f deployments/docker-compose.yml stop app
-   ```
-
-2. 恢复数据卷内容（先清空目标目录，避免残留 `-wal`/`-shm`）：
-
-   ```bash
-   docker run --rm -v email-invoice-guard_sqlite-data:/data -v "$PWD/backup:/backup" alpine \
-     sh -c 'rm -rf /data/* && tar xzf /backup/guard-YYYYmmdd-HHMMSS.tar.gz -C /data && chown -R 10001:10001 /data'
-   ```
-
-3. 恢复密钥到 `.env` 或密钥文件（权限 `0600`）。
-
-4. 校验完整性：
-
-   ```bash
-   docker run --rm -v email-invoice-guard_sqlite-data:/data:ro alpine \
-     sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 /data/invoice-guard.db "PRAGMA integrity_check; PRAGMA foreign_key_check;"'
-   ```
-
-   期望输出 `ok` 且无外键错误。若有问题，立即改用上一代备份。
-
-5. 启动并验证：
-
-   ```bash
-   docker compose -f deployments/docker-compose.yml start app
-   docker compose -f deployments/docker-compose.yml exec app /app/server --healthcheck
-   curl -fsS https://<域名>/healthz
-   ```
-
-6. 在 Telegram 中执行 `/status` 与 `/sync`，确认账号、游标与投递恢复正常。
-
-## 5. 恢复后的语义
-
-- 同步游标随数据库一起恢复，不会重放历史邮件。
-- outbox 中租约已过期的 `SENDING` 任务会被判定为 `UNKNOWN` 并重试，属于**至少一次**语义，极端情况下可能重复投递一条消息。
-- 已确认的账单状态保留；提醒的唯一约束 `(invoice_id, reminder_date)` 防止同一天重复提醒。
-- 若恢复的是较旧快照，恢复后到快照时间点之间已发送的消息可能被再次投递。
-
-## 6. 恢复演练
-
-定期在非生产环境演练恢复，至少验证：
-
-- `PRAGMA integrity_check` 为 `ok`；
-- 服务能通过健康检查；
-- `/status` 数量与备份时接近；
-- `/sync` 不报 `ErrReauthorization`（若报，需重新授权，说明密钥或凭据不匹配）。
+真实部署应演练一次快照、恢复、健康检查、凭据读取、增量同步及提醒恢复。自动化存储测试与端到端测试已覆盖不依赖真实凭证的对应路径。

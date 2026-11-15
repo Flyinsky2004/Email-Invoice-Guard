@@ -1,6 +1,6 @@
 # Microsoft / Outlook 账号接入
 
-本项目通过 Microsoft Graph 读取 Outlook、Hotmail、Live 邮箱中的账单邮件。授权使用 OAuth 2.0 授权码 + PKCE，令牌由服务端加密保存。
+本项目通过 Microsoft Graph 读取 Outlook、Hotmail、Live 邮箱所有启用接收文件夹的新邮件。授权使用 OAuth 2.0 授权码 + PKCE，令牌由服务端加密保存。
 
 ## 1. 在 Azure 注册应用
 
@@ -18,7 +18,7 @@
 6. 在 **API 权限** 中添加 Microsoft Graph 的**委托权限**：
    - `Mail.Read`（读取邮件）
    - `offline_access`（刷新令牌）
-   - `User.Read`（仅用于读取 `/me` 地址以校验账号归属，如不需要可移除）
+   - `User.Read`（本实现读取 `/me` 以绑定邮箱地址，需要保留）
 
 ## 2. 写入配置
 
@@ -51,6 +51,8 @@ MICROSOFT_REDIRECT_URL=https://<你的域名>/oauth/microsoft/callback
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 启动报 `MICROSOFT_REDIRECT_URL: must share the PUBLIC_BASE_URL origin` | 回调地址与 `PUBLIC_BASE_URL` 不同源 | 改为同一域名与协议 |
-| 回调页显示 `invalid_grant` | 授权码过期或已被使用 | 重新执行 `/add microsoft` |
+| 授权回调失败或账号要求重新授权 | 授权码过期或已被使用 | 重新执行 `/add microsoft` |
 | 同步报 `ErrReauthorization` | 刷新令牌失效（改密、撤销、长期未用） | 重新授权 |
 | 收不到个人邮箱 | 账户类型未选 `consumers` | 修改应用注册或调整 `MICROSOFT_TENANT` |
+
+官方参考：[授权码与 PKCE](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow)、[Graph Immutable ID](https://learn.microsoft.com/en-us/graph/outlook-immutable-id)、[文件夹与本地化 well-known 名称](https://learn.microsoft.com/en-us/graph/api/resources/mailfolder?view=graph-rest-1.0)。

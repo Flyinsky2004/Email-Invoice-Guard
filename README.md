@@ -1,6 +1,6 @@
 # Email Invoice Guard
 
-一个自托管的账单邮件守卫：从 Outlook / Hotmail / QQ 邮箱同步账单邮件，解析 RFCHOST 等商家账单，通过 Telegram 推送增强通知，并支持人工确认支付状态与到期提醒。程序**从不自动付款**，「已支付」只是用户的手动声明。
+一个自托管的账单邮件守卫：聚合 Outlook / Hotmail / Live / QQ 邮箱所有启用接收文件夹的新邮件，内置 RFCHOST 账单解析器，通过 Telegram 推送增强通知，并支持人工确认支付状态与到期提醒。程序**从不自动付款**，「已支付」只是用户的手动声明。
 
 - 单进程、模块化单体，数据保存在本地 SQLite。
 - 支持 1–10 个独立授权的邮箱账号。
@@ -12,9 +12,9 @@
 | 能力 | 说明 |
 |---|---|
 | 多账号同步 | Microsoft Graph（Outlook/Hotmail/Live）与 QQ IMAP，按账号串行、账号间并行 |
-| 首次基线 | 首次同步建立基线，只对基线后新邮件通知，历史邮件静默入库 |
+| 首次基线 | 建立历史基线，通知基线前最近 24 小时及初始化期间新增邮件；更早邮件静默入库 |
 | 账单解析 | RFCHOST 账单解析，严格整数金额与日历日期校验 |
-| 增强通知 | 一条消息包含明细、金额、到期日、主机与可信商家链接 |
+| 增强通知 | 一条逻辑通知包含明细、金额、到期日、主机与可信链接，超长时安全分片 |
 | 人工确认 | 两段式确认「已支付」，支持撤销与取消 |
 | 到期提醒 | 按本地日历日每天提醒一次，创建当天与待复核账单不提醒 |
 | 资产关联 | 按明确的商家/账号/主机或产品标识关联 VPS 资产，不猜测 |
@@ -41,6 +41,7 @@ Microsoft Graph / QQ IMAP
 ## 快速开始（Docker Compose）
 
 ```bash
+umask 077
 cp .env.example .env
 # 编辑 .env：PUBLIC_BASE_URL、DOMAIN、TELEGRAM_*、ENCRYPTION_KEY
 openssl rand -base64 32     # 生成 ENCRYPTION_KEY
@@ -56,6 +57,7 @@ docker compose -f deployments/docker-compose.yml ps
 前置：Go 1.27+、`git`、可选 `docker`。
 
 ```bash
+umask 077
 cp .env.example .env
 # 本地可用回环地址；必须显式允许 http：
 #   PUBLIC_BASE_URL=http://localhost:8080
@@ -63,21 +65,25 @@ cp .env.example .env
 #   DATABASE_PATH=./data/invoice-guard.db
 #   TRUSTED_PROXY_CIDRS=（留空）
 
+set -a
+. ./.env
+set +a
+# 本地开发时覆盖容器内数据路径：
+export DATABASE_PATH=./data/invoice-guard.db
 go run ./cmd/server
 ```
 
 常用命令：
 
 ```bash
-gofmt -w internal/app internal/httpserver/server cmd
-go vet ./internal/app/... ./internal/httpserver/server/... ./cmd/...
-go test ./internal/app/... ./internal/httpserver/server/...
-go test -race ./internal/app/... ./internal/httpserver/server/...
+./scripts/verify.sh             # 全量格式检查、vet、test、race、Linux 构建
 CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
-./bin/server --healthcheck      # 探测本机健康端点，退出码 0/1
+./bin/server --healthcheck
+./bin/server --check-db         # 完整性、外键及凭据解密校验
+./bin/server --backup ./backup-$(date +%Y%m%d-%H%M%S).db
 ```
 
-> 运行时组合依赖各功能模块（providers、storage、parser、sync、reminder、telegram 等）。模块全部合入后 `go build ./cmd/server` 才完整可用。
+本地 HTTP 可用于开发与健康检查。QQ 授权码页面始终要求 HTTPS；真实接入请配置 TLS 反向代理。自动化测试使用 Mock Graph、TLS IMAP 和 Telegram，不需要真实凭证。
 
 ## 配置
 
@@ -139,7 +145,7 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 | `/accounts` | 账号列表 |
 | `/remove <accountID>` | 停用账号（保留历史账单） |
 | `/sync` | 立即同步 |
-| `/latest [n]` | 最近邮件 |
+| `/latest` | 最近邮件 |
 | `/search <关键词>` | 搜索邮件 |
 | `/invoices`、`/pending`、`/paid`、`/overdue` | 账单视图 |
 | `/assets` | 资产列表（可按 provider 过滤） |
@@ -170,7 +176,7 @@ CGO_ENABLED=0 go build -trimpath -o ./bin/server ./cmd/server
 ## 备份与恢复
 
 - 不要在运行时直接复制 SQLite 主文件（WAL 可能未合并）。
-- 停机复制数据卷，或使用 SQLite 在线备份 API。
+- 使用 `server --backup <新文件路径>` 创建包含已提交 WAL 数据的在线快照，或停机复制整个数据卷。
 - **密钥必须与数据库分开备份**；丢失密钥将无法解密邮箱凭据。
 - 恢复后执行 `PRAGMA integrity_check`，并确认健康检查与 `/status` 正常。
 
@@ -199,7 +205,8 @@ internal/httpserver/       HTTP 服务与 OAuth 回调
 internal/core/             冻结的领域契约
 internal/providers/        Microsoft / IMAP / QQ 接入
 internal/sync/             同步流水线
-internal/invoice/          解析、状态机、提醒
+internal/invoice/          解析与支付状态机
+internal/reminder/         每日本地日历提醒
 internal/assets/           资产关联
 internal/storage/          SQLite 仓储与迁移
 internal/telegram/         长轮询与消息投递
@@ -209,6 +216,4 @@ docs/operations/           部署、备份、排障
 tests/e2e/                 端到端测试
 ```
 
-## 许可与免责
-
-本项目用于个人账单管理。请自行确认商家条款与所在地区法规；作者不对因误判账单状态造成的损失负责。
+最终验收结果见 [docs/reports/final-report.md](docs/reports/final-report.md)，架构与各 Worker 报告见 [docs/reports/integration-review.md](docs/reports/integration-review.md)。

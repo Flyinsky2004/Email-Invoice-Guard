@@ -46,9 +46,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
-    # Caddy reads {$DOMAIN} from its process environment at startup.
-    env_file:
-      - ../.env
+    # The proxy receives only its public domain, never mailbox/Bot secrets.
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in the project .env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -71,5 +71,6 @@ networks:
 
 volumes:
   sqlite-data:
+    name: ${SQLITE_VOLUME_NAME:-email-invoice-guard_sqlite-data}
   caddy-data:
   caddy-config:

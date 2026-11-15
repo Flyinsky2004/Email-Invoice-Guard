@@ -7,12 +7,15 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"email-invoice-guard/internal/app"
 )
 
 func main() {
 	healthcheck := flag.Bool("healthcheck", false, "probe the local health endpoint and exit")
+	backup := flag.String("backup", "", "write a consistent SQLite snapshot to a new file and exit")
+	checkDB := flag.Bool("check-db", false, "check SQLite integrity, foreign keys and credential decryption and exit")
 	flag.Parse()
 
 	if *healthcheck {
@@ -31,6 +34,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	if *backup != "" || *checkDB {
+		opCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		if err := databaseOperation(opCtx, cfg, *backup, *checkDB, os.Stdout); err != nil {
+			logger.Error("database operation failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := app.Run(ctx, cfg, logger); err != nil {
 		logger.Error("application stopped", "error", err)

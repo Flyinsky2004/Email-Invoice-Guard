@@ -20,6 +20,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+COPY tests ./tests
+# Execute the credential-free suite natively on the target Linux platform.
+RUN go test ./...
 RUN go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
 FROM alpine:3.24.4 AS runtime

@@ -1,0 +1,297 @@
+T08 — Stage B 完成报告（真实组装 + 全链路 E2E）
+================================================
+
+分支: task/T08-app-deployment
+Worktree: /Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t08
+当前提交: 50183fc4ebf13c8617b9adac52a1103aa45f8008
+          feat(app): support explicit QQ alias domains and pin the IMAP host
+提交链:
+  e5a82ed  feat(app-deployment): implement T08 module and tests        (阶段A)
+  f7ed584  fix(app): guard health path against reserved route collisions
+  4e1b065  feat(app-deployment): compose runtime and add end-to-end acceptance tests (阶段B)
+  877126c  feat(core): allow explicitly configured QQ-hosted address domains (CR003, Codex)
+  50183fc  feat(app): support explicit QQ alias domains and pin the IMAP host (CR003, T08)
+
+状态: 阶段B 完成。本地 Docker 构建与容器冒烟通过（标签 eig-t08-verify）；
+      最终 main 发布验收由 Codex 执行。
+
+------------------------------------------------------------------
+一、本阶段修改文件（全部在 allowlist 内）
+------------------------------------------------------------------
+修改:
+  internal/app/run.go                         移除 stageb 标签，真实组装
+  internal/httpserver/server/contract.go      由 contract_stageb.go 重命名并移除标签
+  internal/httpserver/server/server_test.go   新增精确 New 契约测试
+  cmd/server/main.go                          移除 stageb 标签
+  deployments/Dockerfile                      固定 Go1.27.3 + Alpine3.24.4
+  deployments/docker-compose.yml              Caddy 固定 2.11.9-alpine
+  docs/setup/telegram.md                      补充 /settings folder 完整流程
+  README.md                                   同步文件夹管理说明
+  LESSONS.md                                  追加 1 条阶段B教训
+新增:
+  tests/e2e/harness_test.go                   真实 storage + mock Graph/TLS IMAP/Telegram 夹具
+  tests/e2e/imap_flow_test.go                 TLS IMAP 全链路 + 支付/提醒/恢复
+  tests/e2e/graph_flow_test.go                mock Graph 全链路
+  tests/e2e/delivery_test.go                  超长全文完整投递
+  tests/e2e/app_run_test.go                   app.Run 真实启动/健康/优雅退出
+
+未改动: internal/core、go.mod、go.sum、其他 worker、docs/tasks、
+        docs/architecture.md、docs/contracts.md、docs/database-schema.md、SPEC.md。
+未提交: result.txt（.gitignore 已忽略）。
+
+------------------------------------------------------------------
+二、真实组装
+------------------------------------------------------------------
+1. 移除三处 //go:build stageb：
+   - internal/app/run.go
+   - internal/httpserver/server/contract.go（原 contract_stageb.go）
+   - cmd/server/main.go
+2. app.Run 按 docs/contracts.md 精确签名组装：
+   storage.Open → imap.New + qq.NewOnboarding → microsoft.New(可选) →
+   parser.New → assets.New → syncengine.New → lifecycle.New → reminder.New →
+   telegram.New → server.New。
+   - 标准库 errGroup：首个错误保留；任一 goroutine 返回即取消；
+     Wait 等全部退出。
+   - HTTP 在 cfg.ShutdownTimeout 内优雅关闭；所有 goroutine 退出后才 Close DB。
+   - Microsoft 未配置时记录 warn，QQ 继续工作，不挂载 OAuth 路由。
+   - 启动前 validateRuntimeConfig 做纵深校验。
+3. server.New 精确签名已编译：
+   New(cfg, store, *microsoft.Source, *qq.Onboarding) *http.Server；
+   nil 源不挂载对应路由（不放假实现）。
+4. cmd/server：signal.NotifyContext + slog(JSON) + app.Run；--healthcheck
+   仅读取非敏感变量，退出码 0/1。
+
+------------------------------------------------------------------
+三、全链路 E2E（tests/e2e）
+------------------------------------------------------------------
+所有测试使用真实 storage + 真实 sync 引擎 + 真实 RFCHOST parser +
+真实 lifecycle/reminder/telegram；外部依赖全部本地 mock，无真实账号或密钥。
+
+A. TestTLSIMAPInvoiceLifecycle（TLS IMAP → 全链路）
+   1. 真实 imap.Source 连接 imaptest 的 TLS IMAP 服务器（自签 CA，仅测试信任）。
+   2. 真实 RFCHOST 账单邮件 → 一条 PENDING 账单 + 1 条 outbox。
+   3. DeliverOnce → 恰好 1 条增强投递；断言账单号 143058、金额 6.84 USD、
+      到期日 2026-10-24、可信商家 URL、原始邮件回调。
+   4. Bot.Run 真实长轮询：
+      - 回调 p:<id> → 只出现二次确认提示（含 pc:<id>），账单仍 PENDING；
+      - 回调 pc:<id> → 账单 PAID_CONFIRMED，事件数 2（CREATED+PAID）。
+   5. 创建当天 Tick 不产生提醒（即便 PENDING）。
+   6. 回调 pu:<id> → 撤销回 PENDING。
+   7. 次日本地日 Tick → 恰好 1 条唯一提醒；重复 Tick 仍为 1（持久唯一约束）。
+   8. 投递失败重试：注入 1 次 sendMessage 失败 → 提醒 FAILED；再次 DeliverOnce
+      → SENT（真实 claim/fail/retry 路径）。
+   9. 关闭并重开 SQLite：游标 Value/BaselineComplete、账单状态、提醒状态均保留；
+      再次同步不产生重复 outbox（游标恢复、重放幂等）。
+
+B. TestMockGraphInvoiceLifecycle（mock Graph → 全链路）
+   真实 microsoft.Source + 注入 HTTP client + mock Graph（well-known 文件夹、
+   folders 列表、delta、deltaLink）；真实凭证经 storage 加密保存。
+   首次同步 → 账单 + 1 条投递；DeliverOnce → 1 条增强消息；
+   第二次同步复用 deltaLink，不重复投递。
+
+C. TestLongEmailDeliveredWithoutTruncation（超长全文）
+   7500+ CJK 字符 + 首尾唯一标记的非账单邮件 → 多分片投递；
+   断言每个分片 ≤4096 UTF-16 单元、首尾标记与主题完整，无截断。
+
+D. TestAppRunStartsServesHealthAndShutsDown（真实运行时）
+   app.Run 真实启动（storage/HTTP/Telegram 轮询/提醒/同步），
+   轮询 /healthz 直到 200 {"status":"ok"}，确认 Telegram getUpdates 已发生，
+   cancel 后 app.Run 在超时内返回 nil，数据库文件已创建。
+
+E. 既有 server 测试新增 TestContractNewMountsHealthWithoutSources：
+   精确 New(nil,nil) 健康可用、未配置的 onboarding 路由为 404。
+
+------------------------------------------------------------------
+四、实际执行的命令与结果
+------------------------------------------------------------------
+$ go version
+  go version go1.27.3 darwin/arm64
+
+$ gofmt -l internal/app internal/httpserver/server cmd tests/e2e
+  （无输出）
+
+$ go vet ./...
+  （通过，无输出）
+
+$ go build ./cmd/server
+  （成功）
+
+$ go test ./... -count=1
+  ok  cmd/server
+  ok  internal/app
+  ok  internal/assets
+  ok  internal/core
+  ok  internal/httpserver/oauth
+  ok  internal/httpserver/server
+  ok  internal/invoice/lifecycle
+  ok  internal/invoice/parser
+  ok  internal/mailproc
+  ok  internal/providers/imap
+  ?   internal/providers/imap/imaptest [no test files]
+  ok  internal/providers/microsoft
+  ok  internal/providers/qq
+  ok  internal/reminder
+  ok  internal/storage
+  ok  internal/sync
+  ok  internal/telegram
+  ok  tests/e2e
+  ok  tests/integration
+
+$ go test -race ./internal/app/... ./internal/httpserver/server/... ./cmd/... ./tests/e2e/... -count=1
+  ok  internal/app
+  ok  internal/httpserver/server
+  ok  cmd/server
+  ok  tests/e2e
+
+$ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/eig-t08-server-linux ./cmd/server
+  /tmp/eig-t08-server-linux: ELF 64-bit LSB executable, x86-64, statically linked
+
+$ docker build -f deployments/Dockerfile -t eig-t08-verify .
+  #8 FROM docker.io/library/golang:1.27.3-alpine3.24@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18
+  #17 RUN go build ... DONE 9.0s
+  #19 naming to docker.io/library/eig-t08-verify done
+  [exited with code 0]
+
+$ docker image inspect eig-t08-verify
+  sha256:e4349906ad071741f91dd739c588f569ec8993f74475c198d89f51a987f119da
+  User=10001:10001  Entrypoint=[/app/server]
+  Healthcheck=[CMD /app/server --healthcheck]  Ports=8080/tcp
+
+$ docker run -d --rm -p 127.0.0.1:18080:8080 ... eig-t08-verify
+  CONTAINER_STARTED
+  HEALTH_BODY={"status":"ok"}
+  binary_healthcheck_exit=0
+  graceful_stop_exit=0
+
+$ cp .env.example .env && docker compose -f deployments/docker-compose.yml config
+  COMPOSE_CONFIG_OK
+  image: caddy:2.11.9-alpine
+  TRUSTED_PROXY_CIDRS: 10.89.0.0/24
+  subnet: 10.89.0.0/24
+  （随后删除临时 .env）
+
+------------------------------------------------------------------
+五、基础镜像来源与固定
+------------------------------------------------------------------
+- Alpine 发布生命周期: https://www.alpinelinux.org/releases/
+  3.21 已于 2026-11-01 EOL；当前受支持 3.24 线，运行时固定 alpine:3.24.4。
+- Caddy 最新发布: https://github.com/caddyserver/caddy/releases/latest
+  v2.11.9（2026-11-05）；Compose 固定 caddy:2.11.9-alpine。
+- Go: golang:1.27.3-alpine3.24（构建阶段）。
+- 上述 tag 由 Codex 以 docker manifest inspect 验证可用；本地构建实际拉取
+  golang:1.27.3-alpine3.24 与 alpine:3.24.4 成功（构建日志见上）。
+- 未对旧 Alpine 3.21 / Caddy 2.9 的构建结果作最终验收声明。
+
+------------------------------------------------------------------
+六、验收矩阵（阶段B）
+------------------------------------------------------------------
+[满足] 移除 stageb 标签，真实 app/server/main 组装
+[满足] go build ./cmd/server 成功；go vet ./... 通过
+[满足] 真实 storage/parser/pipeline/lifecycle/reminder/telegram 参与 E2E
+[满足] mock Graph 全链路（真实 microsoft.Source）
+[满足] TLS IMAP 全链路（真实 imap.Source + imaptest TLS 服务器）
+[满足] mock Telegram（sendMessage/editMessageText/answerCallbackQuery/getUpdates）
+[满足] 两段式支付确认（第一次仅提示，第二次才 Confirm）
+[满足] 撤销（PAID → PENDING）
+[满足] 提醒：创建当天不提醒；次日本地日恰好一条；重复 Tick 不重复
+[满足] 投递失败重试（FAILED → 重试 → SENT）
+[满足] 关闭重开 DB：游标/账单/提醒恢复；重放不重复投递
+[满足] 超长全文多分片、每片 ≤4096 UTF-16、无截断
+[满足] app.Run 真实启动、健康端点、Telegram 轮询、优雅退出
+[满足] Dockerfile 固定受支持基础镜像；非 root；healthcheck；graceful stop
+[满足] Compose 固定 Caddy 2.11.9；env_file；SQLite 卷；隔离网段
+[满足] 本地 Docker 构建 eig-t08-verify 成功并完成容器冒烟
+[满足] 未修改其他模块、core、go.mod/go.sum、共享文档
+[未执行] 最终 main 发布验收（按指示由 Codex 执行）
+
+------------------------------------------------------------------
+七、集成问题 / 限制（需告知）
+------------------------------------------------------------------
+1. IMAP 自定义主机/域名无法从配置注入（真实限制，未改契约）
+   - imap.Source 通过导出字段 AllowedHosts/AllowedDomains 限定 QQ 主机与域名，
+     但 core.IMAPConfig 没有对应字段，app.Run 无法从环境变量配置它们。
+   - 影响：生产组合仅支持默认 imap.qq.com 与 qq.com/foxmail.com 域名。
+     若需支持其他 QQ 托管域名或自建 IMAP 主机，需要 Codex 评估是否扩展
+     core.IMAPConfig（本 worker 未修改冻结契约）。
+   - 默认 QQ 场景不受影响，E2E 通过显式设置导出字段验证了真实 TLS 路径。
+2. E2E 提醒测试的时间接缝
+   - reminder.Tick 用传入的 now 作为 outbox available_at；测试模拟“次日”后
+     需先把 PENDING 投递的 available_at 调整为已到期，再走真实 DeliverOnce。
+     已记录到 LESSONS.md，未改变生产逻辑。
+3. Telegram 至少一次语义、外部消息不可原子回滚等限制保持文档所述。
+4. Docker 镜像为本地 eig-t08-verify 标签；未推送、未覆盖其他标签。
+
+------------------------------------------------------------------
+八、文档更新
+------------------------------------------------------------------
+- docs/setup/telegram.md：补充 /settings folder <accountID> 列出名称/ID/启用状态，
+  再 /settings folder <accountID> <folderID> on|off 切换的完整流程；
+  说明接入后新建文件夹会在目录刷新时发现并保留用户选择。
+- README.md：同步文件夹管理说明。
+- deployments/Dockerfile / docker-compose.yml：固定受支持基础镜像并注明来源。
+
+------------------------------------------------------------------
+九、结论
+------------------------------------------------------------------
+阶段B 的真实组合、全链路 E2E、Linux 构建、Docker 构建与容器冒烟均已完成并通过。
+CR003 的 QQ 别名域名配置支持已实现并测试。
+代码已提交到 task/T08-app-deployment（最终 50183fc），未推送、未合并。
+等待 Codex 进行最终 main 发布验收；如需修复具体失败证据，请在同一分支提出。
+
+------------------------------------------------------------------
+十、CR002 兼容性（Codex 主线扩展，待最终 rebase 带入）
+------------------------------------------------------------------
+CR002 内容：core.InvoiceURLValidator 可选接口
+ValidateInvoiceURL(Invoice) bool；parser.Registry 委托商家 parser 规则；
+Telegram 通过已注入的 Registry 做通用 HTTPS 校验，不再硬编码商家域名。
+构造签名完全不变。
+
+T08 影响评估：无需改代码。
+- app.Run 已将 parser.New() 注入 telegram.New（internal/app/run.go:75-76），
+  rebase 后 Telegram 自动使用 Registry 的 URL 校验。
+- E2E harness 同样注入 parser.New()（tests/e2e/harness_test.go:109）。
+- T08 生产代码（internal/app、internal/httpserver/server、cmd、tests/e2e）
+  经 grep 确认不含 rfchost / TrustedInvoiceURL / trustedInvoice 等硬编码商家域名逻辑。
+- tests/e2e 中对 https://my.rfchost.com/viewinvoice.php?id=143058 的断言是
+  fixture 级期望，rebase 后应由 RFCHOST parser 规则继续接受，预期保持通过。
+
+Rebase 后建议复核（不阻塞当前交付）：
+1. 确认 parser.Registry 实现 core.InvoiceURLValidator。
+2. 重跑 go test ./... 与 -race，重点 tests/e2e 的增强投递键盘断言。
+3. 可选增强：用拒绝该 URL 的 Registry 断言“View invoice”按钮不出现，
+   用接受该 URL 的 Registry 断言按钮出现（需 CR002 已在分支内）。
+4. Codex 新增的“目录发现期间用户改开关”SQLite 事务回归属于 T03/T06；
+   app.Run 仅把同一 core.Store 传给 sync 引擎，无 T08 改动需求。
+
+------------------------------------------------------------------
+十一、CR003：QQ 别名域名配置（已实现）
+------------------------------------------------------------------
+Codex 已将 core.IMAPConfig.AllowedDomains []string cherry-pick 到本分支（877126c）。
+T08 负责配置与文档，不修改 Provider；运行时 Source 读取 cfg.AllowedDomains
+由 Codex 在主线处理。
+
+实现：
+- internal/app/config.go
+  - 新增 QQ_ALLOWED_DOMAINS（逗号分隔裸域名，默认 qq.com,foxmail.com）。
+  - parseDomainList / normalizeDomain：小写化、去重；严格拒绝 scheme、路径、端口、
+    userinfo、通配符、IP、单段名、空标签、连字符首尾、纯数字 TLD、长度超限。
+  - IMAP_ADDRESS 的主机与 IMAP_SERVER_NAME 固定为 imap.qq.com；其他主机启动即报错。
+    只固定 imap.qq.com，不开放任意 IMAP 主机。
+  - 空值使用默认白名单。
+- internal/app/runtime_config.go：程序化 cfg 同样校验 AllowedDomains 与主机固定。
+- 测试：默认值、自定义列表小写/去重、11 类非法输入、非 QQ 主机、非 QQ ServerName；
+  runtime 校验新增 3 类用例。
+- .env.example / README.md / docs/setup/qq-imap.md（新增 CR003 章节）/
+  docs/operations/troubleshooting.md 已同步。
+- tests/e2e/app_run_test.go 的 IMAP 配置改为固定 imap.qq.com:993（无账号，不拨号）。
+
+安全语义：
+- 白名单只决定“允许尝试哪些地址”；每个别名仍必须通过真实 QQ TLS 登录验证，
+  认证失败不会保存任何可用账号（Provider 既有行为，未改动）。
+- 不支持任意 IMAP 主机；TLS 校验不可关闭。
+
+验证：
+  gofmt -l internal/app tests/e2e          → 无输出
+  go vet ./internal/app/... ./tests/e2e/... → 通过
+  go test ./... -count=1                   → 19 个包全部 ok
+  go test -race (owned)                    → 全部 ok
