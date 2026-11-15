@@ -31,20 +31,31 @@ func (b *Bot) handleMessage(ctx context.Context, m *message) {
 		b.log.Warn("telegram: rejected message from unauthorized sender", "user_id", userID)
 		return
 	}
+	text := strings.TrimSpace(m.Text)
+	if b.manual != nil && text != "" && !strings.HasPrefix(text, "/") {
+		if rep, handled := b.wizardInput(ctx, m); handled {
+			b.sendReply(ctx, m.Chat.ID, rep, "wizard")
+			return
+		}
+	}
 	cmd, args := parseCommand(m.Text)
 	if cmd == "" {
 		return
 	}
-	rep, err := b.runCommand(ctx, cmd, args, m.From.ID)
+	rep, err := b.runCommand(ctx, cmd, args, m.From.ID, m.Chat.ID)
 	if err != nil {
 		b.log.Warn("telegram: command failed", "command", cmd, "error", err.Error())
 		rep = reply{parts: []string{"Command failed. Check the server logs for details."}}
 	}
+	b.sendReply(ctx, m.Chat.ID, rep, cmd)
+}
+
+func (b *Bot) sendReply(ctx context.Context, chatID int64, rep reply, label string) {
 	if len(rep.parts) == 0 {
 		return
 	}
-	if err := b.sendParts(ctx, m.Chat.ID, rep.parts, rep.keyboard); err != nil {
-		b.log.Warn("telegram: reply failed", "command", cmd, "error", err.Error())
+	if err := b.sendParts(ctx, chatID, rep.parts, rep.keyboard); err != nil {
+		b.log.Warn("telegram: reply failed", "command", label, "error", err.Error())
 	}
 }
 
@@ -60,12 +71,16 @@ func parseCommand(text string) (string, []string) {
 	return strings.ToLower(cmd), fields[1:]
 }
 
-func (b *Bot) runCommand(ctx context.Context, cmd string, args []string, userID int64) (reply, error) {
+func (b *Bot) runCommand(ctx context.Context, cmd string, args []string, userID, chatID int64) (reply, error) {
 	switch cmd {
 	case "start":
 		return reply{parts: []string{"Invoice Guard is ready. Use /help to see available commands."}}, nil
 	case "help":
-		return reply{parts: []string{helpText}}, nil
+		text := helpText
+		if b.manual != nil {
+			text += "\n" + manualHelpText
+		}
+		return reply{parts: []string{text}}, nil
 	case "add":
 		return b.commandAdd(ctx, args, userID)
 	case "accounts":
@@ -94,6 +109,28 @@ func (b *Bot) runCommand(ctx context.Context, cmd string, args []string, userID 
 		return b.commandStatus(ctx)
 	case "settings":
 		return b.commandSettings(ctx, args, userID)
+	case "reminders":
+		return b.commandReminders(ctx)
+	case "reminder":
+		return b.commandReminder(ctx, args)
+	case "reminder_add":
+		return b.commandReminderAdd(ctx, userID, chatID)
+	case "reminder_edit":
+		return b.commandReminderEdit(ctx, args, userID, chatID)
+	case "reminder_pause":
+		return b.commandReminderPause(ctx, args, userID)
+	case "reminder_resume":
+		return b.commandReminderResume(ctx, args, userID)
+	case "reminder_delete":
+		return b.commandReminderDelete(ctx, args, userID)
+	case "reminder_paid":
+		return b.commandReminderPaid(ctx, args, userID)
+	case "reminder_pending":
+		return b.commandReminderPending(ctx)
+	case "reminder_history":
+		return b.commandReminderHistory(ctx, args)
+	case "cancel":
+		return b.commandCancelWizard(chatID, userID), nil
 	default:
 		return reply{parts: []string{"Unknown command. Use /help."}}, nil
 	}
@@ -116,6 +153,19 @@ const helpText = `<b>Invoice Guard commands</b>
 /settings - show or update settings
 /settings folder &lt;accountID&gt; - list folders for an account
 /settings folder &lt;accountID&gt; &lt;folderID&gt; on|off - enable or disable a folder`
+
+const manualHelpText = `<b>Manual recurring reminders</b>
+/reminder_add - create a recurring bill with the wizard
+/reminders - list manual plans
+/reminder &lt;id&gt; - show one plan and its pending occurrences
+/reminder_edit &lt;id&gt; - edit a plan with the wizard
+/reminder_pause &lt;id&gt; - pause a plan
+/reminder_resume &lt;id&gt; - resume a paused plan
+/reminder_delete &lt;id&gt; - cancel a plan
+/reminder_paid &lt;occurrenceID&gt; - confirm an occurrence paid
+/reminder_pending - list pending occurrences
+/reminder_history &lt;id&gt; - plan events and dispatches
+/cancel - cancel the active wizard`
 
 func (b *Bot) commandAdd(ctx context.Context, args []string, userID int64) (reply, error) {
 	if len(args) == 0 {

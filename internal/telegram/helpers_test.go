@@ -493,6 +493,11 @@ func (e *testEnv) rebuild() {
 	e.bot = New(e.store, e.payment, e.syncer, e.parsers, e.onboarding, e.cfg, e.tg.server.Client(), slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
+// withManual rebuilds the bot through NewWithManual with the supplied service.
+func (e *testEnv) withManual(manual core.ManualReminderService) {
+	e.bot = NewWithManual(e.store, e.payment, e.syncer, e.parsers, e.onboarding, manual, e.cfg, e.tg.server.Client(), slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+}
+
 func (e *testEnv) message(text string) *message {
 	return &message{MessageID: 1, From: &user{ID: 7}, Chat: chat{ID: 42}, Text: text}
 }

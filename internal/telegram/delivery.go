@@ -120,6 +120,9 @@ func (b *Bot) deliver(ctx context.Context, delivery *core.Delivery) {
 // when the job was skipped because its source is gone or a reminder is stale.
 func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (parts []string, markup *inlineKeyboard, invoiceID string, ok bool) {
 	payload := delivery.Payload
+	if payload.Kind == "manual" || payload.ManualPlanID != "" {
+		return b.renderManualDelivery(ctx, delivery)
+	}
 	invoiceDelivery := payload.Kind == "invoice" || payload.Kind == "reminder" ||
 		(payload.InvoiceID != "" && payload.EmailID == "")
 	if invoiceDelivery {
@@ -174,6 +177,48 @@ func (b *Bot) renderDelivery(ctx context.Context, delivery *core.Delivery) (part
 		return nil, nil, "", false
 	}
 	return formatEmailAt(email, account, b.location(ctx)), nil, "", true
+}
+
+// renderManualDelivery renders a daily summary for an operator-declared plan.
+// A nil manual service disables the branch entirely; a missing source is
+// skipped, while a transient read failure is retried.
+func (b *Bot) renderManualDelivery(ctx context.Context, delivery *core.Delivery) (parts []string, markup *inlineKeyboard, invoiceID string, ok bool) {
+	if b.manual == nil {
+		b.skipDelivery(ctx, delivery, "manual reminders are disabled")
+		return nil, nil, "", false
+	}
+	payload := delivery.Payload
+	if payload.ManualPlanID == "" {
+		b.skipDelivery(ctx, delivery, "manual payload has no plan id")
+		return nil, nil, "", false
+	}
+	plan, err := b.manual.GetPlan(ctx, payload.ManualPlanID)
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			b.skipDelivery(ctx, delivery, "manual plan unavailable")
+		} else {
+			b.failDelivery(ctx, delivery, false, "load manual plan: "+sanitizeReason(err))
+		}
+		return nil, nil, "", false
+	}
+	occurrences := make([]core.ManualOccurrence, 0, len(payload.ManualOccurrenceIDs))
+	for _, id := range payload.ManualOccurrenceIDs {
+		occ, err := b.manual.GetOccurrence(ctx, id)
+		if err != nil {
+			if errors.Is(err, core.ErrNotFound) {
+				b.skipDelivery(ctx, delivery, "manual occurrence unavailable")
+			} else {
+				b.failDelivery(ctx, delivery, false, "load manual occurrence: "+sanitizeReason(err))
+			}
+			return nil, nil, "", false
+		}
+		occurrences = append(occurrences, occ)
+	}
+	if len(occurrences) == 0 {
+		b.skipDelivery(ctx, delivery, "manual summary has no occurrences")
+		return nil, nil, "", false
+	}
+	return formatManualSummaryAt(plan, occurrences), b.manualSummaryKeyboard(plan, occurrences), "", true
 }
 
 // reminderNote renders the due-distance line at delivery time so a reminder

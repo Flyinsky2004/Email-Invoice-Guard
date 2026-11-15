@@ -297,3 +297,15 @@
 - 修复 commit：本次 orchestrator 修复提交（firstFreeBilling 读取该计划全部 occurrence，最多前进 24 个月找空位）。
 - Done right: TestUpdateScheduleSkipsExistingOccurrence / TestResumeSkipsExistingOccurrence 断言跳到下一个空位月份。
 - Seen 1× (2026-11-15).
+
+**提交前必须扫描改动文件，确认没有残留占位符替换后的真实凭据。**
+- T12 实现中两次在 `wizard_test.go` / `manual_delivery_test.go` 的测试 URL 写入凭据占位符语法，工具替换后真实值进入工作区；提交前发现并改为 `"user:"+"pass"` 运行时拼接，未进入提交。根因同 T04 凭据占位符条目。
+- 修复 commit：待定位（本次 T12 提交）。
+- Done right: 测试凭据只写明显非机密的字面量或运行时拼接；提交前对改动文件 grep `user:`/凭据占位符语法，确认只剩安全字面量。
+- Seen 1× (2026-11-15).
+
+**Telegram 手动提醒的支付确认必须两阶段，向导必须覆盖规格步骤，且不得用非冻结接口实现越界能力。**
+- T12 初版 `mp` 一键确认支付；用 `store` 类型断言实现按 occurrence 取消与 dispatch 明细；遗漏规格 7.1 的 period/asset 步骤。评审要求退修。
+- 修复 commit：待定位（本次 T12 修复提交）。
+- Done right: `mp` 只显示确认提示（Confirm=`mc`、Cancel=`mv`），`mc` 才调用 `ConfirmOccurrence`；只用 `core.ManualReminderService` 与 `core.Store` 的冻结方法；向导含 period（仅 monthly）与 asset（`ListAssets(Limit:0)` + Skip）步骤。
+- Seen 1× (2026-11-15).
