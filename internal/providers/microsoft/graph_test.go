@@ -52,35 +52,80 @@ func TestType(t *testing.T) {
 func TestListFoldersMapsRolesAndPreservesEnabled(t *testing.T) {
 	var server *httptest.Server
 	var prefer string
+	var sawWellKnownName bool
 	source, repo, srv := newSourceWithServer(t, func(w http.ResponseWriter, r *http.Request) {
 		prefer = r.Header.Get("Prefer")
-		switch r.URL.Query().Get("page") {
-		case "":
-			writeJSON(w, map[string]any{
-				"value": []map[string]any{
-					{"id": "f-inbox", "displayName": "Inbox", "wellKnownName": "inbox"},
-					{"id": "f-sent", "displayName": "Sent Items", "wellKnownName": "sentitems"},
-				},
-				"@odata.nextLink": server.URL + "/v1.0/me/mailFolders?page=2",
-			})
-		case "2":
+		if strings.Contains(r.URL.RawQuery, "wellKnownName") {
+			sawWellKnownName = true
+		}
+		switch r.URL.Path {
+		case "/v1.0/me/mailFolders/inbox":
+			writeJSON(w, map[string]string{"id": "f-inbox"})
+		case "/v1.0/me/mailFolders/sentitems":
+			writeJSON(w, map[string]string{"id": "f-sent"})
+		case "/v1.0/me/mailFolders/drafts":
+			writeJSON(w, map[string]string{"id": "f-drafts"})
+		case "/v1.0/me/mailFolders/deleteditems":
+			writeJSON(w, map[string]string{"id": "f-deleted"})
+		case "/v1.0/me/mailFolders/junkemail":
+			writeJSON(w, map[string]string{"id": "f-junk"})
+		case "/v1.0/me/mailFolders":
+			switch r.URL.Query().Get("page") {
+			case "":
+				writeJSON(w, map[string]any{
+					"value": []map[string]any{
+						{"id": "f-inbox", "displayName": "收件箱", "childFolderCount": 0},
+						{"id": "f-sent", "displayName": "已发送邮件", "childFolderCount": 0},
+						{"id": "f-custom", "displayName": "Projects", "childFolderCount": 1},
+					},
+					"@odata.nextLink": server.URL + "/v1.0/me/mailFolders?page=2",
+				})
+			case "2":
+				writeJSON(w, map[string]any{"value": []map[string]any{
+					{"id": "f-drafts", "displayName": "Drafts", "childFolderCount": 0},
+					{"id": "f-deleted", "displayName": "Deleted Items", "childFolderCount": 0},
+					{"id": "f-junk", "displayName": "Junk Email", "childFolderCount": 0},
+				}})
+			default:
+				http.NotFound(w, r)
+			}
+		case "/v1.0/me/mailFolders/f-custom/childFolders":
+			switch r.URL.Query().Get("page") {
+			case "":
+				writeJSON(w, map[string]any{
+					"value": []map[string]any{
+						{"id": "f-child", "displayName": "Invoices", "childFolderCount": 1},
+					},
+					"@odata.nextLink": server.URL + "/v1.0/me/mailFolders/f-custom/childFolders?page=2",
+				})
+			case "2":
+				writeJSON(w, map[string]any{"value": []map[string]any{
+					{"id": "f-nested", "displayName": "2026", "childFolderCount": 0},
+				}})
+			default:
+				http.NotFound(w, r)
+			}
+		case "/v1.0/me/mailFolders/f-child/childFolders":
 			writeJSON(w, map[string]any{"value": []map[string]any{
-				{"id": "f-drafts", "displayName": "Drafts", "wellKnownName": "drafts"},
-				{"id": "f-deleted", "displayName": "Deleted Items", "wellKnownName": "deleteditems"},
-				{"id": "f-junk", "displayName": "Junk Email", "wellKnownName": "junkemail"},
-				{"id": "f-other", "displayName": "Other", "wellKnownName": ""},
+				{"id": "f-grandchild", "displayName": "Q1", "childFolderCount": 0},
 			}})
 		default:
 			http.NotFound(w, r)
 		}
 	})
 	server = srv
-	repo.folders["acc-1"] = []core.MailFolder{{ID: "f-sent", AccountID: "acc-1", Enabled: true}}
+	repo.folders["acc-1"] = []core.MailFolder{
+		{ID: "f-sent", AccountID: "acc-1", Enabled: true},
+		{ID: "f-child", AccountID: "acc-1", Enabled: true},
+	}
 
 	folders, err := source.ListFolders(context.Background(), testAccount("acc-1"))
 	requireNoError(t, err)
-	if len(folders) != 6 {
-		t.Fatalf("folders = %d", len(folders))
+	if sawWellKnownName {
+		t.Fatal("Graph v1.0 mailFolder has no wellKnownName property")
+	}
+	if len(folders) != 9 {
+		t.Fatalf("folders = %d: %+v", len(folders), folders)
 	}
 	byID := map[string]core.MailFolder{}
 	for _, folder := range folders {
@@ -88,15 +133,23 @@ func TestListFoldersMapsRolesAndPreservesEnabled(t *testing.T) {
 	}
 	roles := map[string]string{
 		"f-inbox": "inbox", "f-sent": "sent", "f-drafts": "drafts",
-		"f-deleted": "deleteditems", "f-junk": "junkemail", "f-other": "",
+		"f-deleted": "deleteditems", "f-junk": "junkemail",
+		"f-custom": "", "f-child": "", "f-nested": "", "f-grandchild": "",
 	}
 	for id, role := range roles {
-		if byID[id].Role != role {
-			t.Fatalf("%s role = %q, want %q", id, byID[id].Role, role)
+		folder, ok := byID[id]
+		if !ok {
+			t.Fatalf("folder %s was not discovered", id)
 		}
-		if byID[id].AccountID != "acc-1" {
-			t.Fatalf("%s account = %q", id, byID[id].AccountID)
+		if folder.Role != role {
+			t.Fatalf("%s role = %q, want %q", id, folder.Role, role)
 		}
+		if folder.AccountID != "acc-1" {
+			t.Fatalf("%s account = %q", id, folder.AccountID)
+		}
+	}
+	if byID["f-inbox"].Name != "收件箱" {
+		t.Fatalf("localized inbox name = %q", byID["f-inbox"].Name)
 	}
 	if !byID["f-inbox"].Enabled {
 		t.Fatal("inbox should be enabled by default")
@@ -104,7 +157,10 @@ func TestListFoldersMapsRolesAndPreservesEnabled(t *testing.T) {
 	if !byID["f-sent"].Enabled {
 		t.Fatal("stored folder choice was not preserved")
 	}
-	for _, id := range []string{"f-drafts", "f-deleted", "f-junk", "f-other"} {
+	if !byID["f-child"].Enabled {
+		t.Fatal("enabled custom child folder was not preserved")
+	}
+	for _, id := range []string{"f-drafts", "f-deleted", "f-junk", "f-custom", "f-nested", "f-grandchild"} {
 		if byID[id].Enabled {
 			t.Fatalf("%s should be disabled by default", id)
 		}
@@ -630,13 +686,39 @@ func TestPlainTextBodyIsPreserved(t *testing.T) {
 
 func TestHTMLToText(t *testing.T) {
 	input := `<html><head><style>.x{}</style></head><body><p>Hello &amp; <b>World</b></p>` +
-		`<script>alert("x")</script><div>Second&nbsp;line</div></body></html>`
+		`<script>alert("x")</script><div>Second&nbsp;line</div>` +
+		`<custom-tag>keep me</custom-tag><p>你好，账单 2 &lt; 3</p></body></html>`
 	got := htmlToText(input)
 	if strings.Contains(got, "alert") || strings.Contains(got, ".x{") {
 		t.Fatalf("script/style leaked: %q", got)
 	}
-	if !strings.Contains(got, "Hello & World") || !strings.Contains(got, "Second line") {
-		t.Fatalf("text = %q", got)
+	for _, want := range []string{"Hello & World", "Second line", "keep me", "你好，账单 2 < 3"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text %q missing %q", got, want)
+		}
+	}
+}
+
+func TestSyncStreamsLargeSuccessfulBody(t *testing.T) {
+	large := strings.Repeat("x", 9<<20)
+	var server *httptest.Server
+	source, _, srv := newSourceWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		message := sampleMessage("imm-large", time.Now().UTC())
+		message["body"] = map[string]string{"contentType": "text", "content": "prefix-" + large + "-suffix"}
+		writeJSON(w, deltaResponse("", server.URL+"/v1.0/delta", message))
+	})
+	server = srv
+	batch, err := source.Sync(context.Background(), testAccount("acc-1"), testFolder("inbox"), core.SyncCursor{})
+	requireNoError(t, err)
+	if len(batch.Emails) != 1 {
+		t.Fatalf("emails = %d", len(batch.Emails))
+	}
+	body := batch.Emails[0].TextBody
+	if len(body) < 8<<20 {
+		t.Fatalf("body truncated at %d bytes", len(body))
+	}
+	if !strings.HasPrefix(body, "prefix-") || !strings.HasSuffix(body, "-suffix") {
+		t.Fatal("large body was not delivered intact")
 	}
 }
 

@@ -27,7 +27,6 @@ const (
 	oauthScope         = "Mail.Read offline_access User.Read"
 	sessionPurpose     = "microsoft_oauth"
 	maxGraphAttempts   = 3
-	maxResponseBytes   = 8 << 20
 	maxRetryDelay      = 30 * time.Second
 )
 

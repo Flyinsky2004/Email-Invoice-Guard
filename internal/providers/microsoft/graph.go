@@ -72,10 +72,14 @@ type graphDeltaPage struct {
 	Value     []deltaItem `json:"value"`
 }
 
+// graphFolder mirrors the Graph v1.0 mailFolder resource. Graph does not
+// expose wellKnownName; roles are resolved through the well-known folder
+// paths instead.
 type graphFolder struct {
-	ID            string `json:"id"`
-	DisplayName   string `json:"displayName"`
-	WellKnownName string `json:"wellKnownName"`
+	ID               string `json:"id"`
+	DisplayName      string `json:"displayName"`
+	ParentFolderID   string `json:"parentFolderId"`
+	ChildFolderCount int    `json:"childFolderCount"`
 }
 
 type graphFolderPage struct {
@@ -139,12 +143,18 @@ func (s *Source) executeJSON(ctx context.Context, rawURL string, out any,
 		case resp.StatusCode == http.StatusGone:
 			drainAndClose(resp.Body)
 			return errCursorGone
+		case resp.StatusCode == http.StatusNotFound:
+			drainAndClose(resp.Body)
+			return fmt.Errorf("%w: graph resource", core.ErrNotFound)
 		case resp.StatusCode < 200 || resp.StatusCode >= 300:
 			drainAndClose(resp.Body)
 			return fmt.Errorf("graph request: status %d", resp.StatusCode)
 		default:
 			defer resp.Body.Close()
-			if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(out); err != nil {
+			// Successful payloads stream without a size cap: a single message
+			// body may legitimately exceed 8 MiB. Token/error responses remain
+			// bounded by readLimited.
+			if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 				return fmt.Errorf("decode graph response: %w", err)
 			}
 			return nil
@@ -193,8 +203,22 @@ func retryAfter(resp *http.Response, attempt int) time.Duration {
 	return delay
 }
 
-// ListFolders discovers mail folders, mapping well-known names to roles. Only
-// Inbox is enabled by default; previously stored choices are preserved.
+var wellKnownFolders = []struct {
+	Name string
+	Role string
+}{
+	{"inbox", "inbox"},
+	{"sentitems", "sent"},
+	{"drafts", "drafts"},
+	{"deleteditems", "deleteditems"},
+	{"junkemail", "junkemail"},
+}
+
+// ListFolders discovers mail folders. Graph v1.0 does not expose a
+// wellKnownName property, so roles are resolved through the well-known folder
+// paths and matched by id (this also works for localized names such as
+// "收件箱"). Child folders are traversed recursively. Only Inbox is enabled by
+// default; previously stored choices are preserved.
 func (s *Source) ListFolders(ctx context.Context, account core.MailAccount) ([]core.MailFolder, error) {
 	if err := s.ready(); err != nil {
 		return nil, err
@@ -208,53 +232,75 @@ func (s *Source) ListFolders(ctx context.Context, account core.MailAccount) ([]c
 		enabled[folder.ID] = folder.Enabled
 	}
 
-	next := s.graphURL("/me/mailFolders?$top=100&$select=id,displayName,wellKnownName")
+	roleByID := make(map[string]string, len(wellKnownFolders))
+	for _, known := range wellKnownFolders {
+		var folder struct {
+			ID string `json:"id"`
+		}
+		err := s.graphGet(ctx, account,
+			s.graphURL("/me/mailFolders/"+url.PathEscape(known.Name)+"?$select=id"), &folder)
+		if err != nil {
+			if errors.Is(err, core.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if folder.ID != "" {
+			roleByID[folder.ID] = known.Role
+		}
+	}
+
 	folders := make([]core.MailFolder, 0, 8)
+	seen := make(map[string]bool)
+	root := s.graphURL("/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount")
+	if err := s.collectFolders(ctx, account, root, roleByID, enabled, &folders, seen, 0); err != nil {
+		return nil, err
+	}
+	return folders, nil
+}
+
+func (s *Source) collectFolders(ctx context.Context, account core.MailAccount, next string,
+	roleByID map[string]string, enabled map[string]bool,
+	folders *[]core.MailFolder, seen map[string]bool, depth int) error {
+	if depth > 20 {
+		return fmt.Errorf("%w: folder nesting limit", core.ErrInvalid)
+	}
 	for page := 0; next != ""; page++ {
 		if page >= 20 {
-			return nil, fmt.Errorf("%w: folder pagination limit", core.ErrInvalid)
+			return fmt.Errorf("%w: folder pagination limit", core.ErrInvalid)
 		}
 		var response graphFolderPage
 		if err := s.graphGet(ctx, account, next, &response); err != nil {
-			return nil, err
+			return err
 		}
 		for _, folder := range response.Value {
-			if folder.ID == "" {
+			if folder.ID == "" || seen[folder.ID] {
 				continue
 			}
-			role := folderRole(folder.WellKnownName)
+			seen[folder.ID] = true
+			role := roleByID[folder.ID]
 			on, known := enabled[folder.ID]
 			if !known {
 				on = role == "inbox"
 			}
-			folders = append(folders, core.MailFolder{
+			*folders = append(*folders, core.MailFolder{
 				ID:        folder.ID,
 				AccountID: account.ID,
 				Name:      folder.DisplayName,
 				Role:      role,
 				Enabled:   on,
 			})
+			if folder.ChildFolderCount > 0 {
+				childURL := s.graphURL("/me/mailFolders/" + url.PathEscape(folder.ID) +
+					"/childFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount")
+				if err := s.collectFolders(ctx, account, childURL, roleByID, enabled, folders, seen, depth+1); err != nil {
+					return err
+				}
+			}
 		}
 		next = response.NextLink
 	}
-	return folders, nil
-}
-
-func folderRole(wellKnown string) string {
-	switch strings.ToLower(strings.TrimSpace(wellKnown)) {
-	case "inbox":
-		return "inbox"
-	case "sentitems":
-		return "sent"
-	case "drafts":
-		return "drafts"
-	case "deleteditems":
-		return "deleteditems"
-	case "junkemail":
-		return "junkemail"
-	default:
-		return strings.ToLower(strings.TrimSpace(wellKnown))
-	}
+	return nil
 }
 
 // Sync fetches one bounded delta page for a folder. It only returns a candidate
