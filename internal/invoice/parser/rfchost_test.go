@@ -400,6 +400,145 @@ func TestParseChineseSpacesAndUnicodePromo(t *testing.T) {
 	}
 }
 
+// realTemplateText mirrors the plain-text part of an actual RFCHOST invoice:
+// the service period and price share the item line, and the discount clause
+// shares the promotion line.
+const realTemplateText = `Dear Lem John,
+
+This is a notice that an invoice has been generated on 2026/10/14.
+
+Your payment method is: 支付宝 | Alipay+
+
+Invoice #143058
+Amount Due: $6.84 USD
+Due Date: 2026/10/24
+
+Invoice Items
+
+JP2-CO-Micro - lk9I8F2Mdvc.rfchost.com (2026/10/24 - 2026/11/23) $11.40 USD
+OS: Debian-12.0_x64
+Promotional Code: 我是高手我不需要发工单 - 40.00% Recurring Discount $-4.56 USD
+------------------------------------------------------
+Sub Total: $6.84 USD
+Credit: $0.00 USD
+Total: $6.84 USD
+------------------------------------------------------
+
+You can login to your client area to view and pay the invoice at https://my.rfchost.com/viewinvoice.php?id=143058
+`
+
+const realTemplateHTML = `<html><body>
+<p>Dear Lem John,</p>
+<p>This is a notice that an invoice has been generated on 2026/10/14.</p>
+<p>Your payment method is: 支付宝 | Alipay+</p>
+<p>Invoice #143058<br>
+Amount Due: $6.84 USD<br>
+Due Date: 2026/10/24</p>
+<p><strong>Invoice Items</strong></p>
+<p>JP2-CO-Micro - lk9I8F2Mdvc.rfchost.com (2026/10/24 - 2026/11/23) $11.40 USD<br>
+OS: Debian-12.0_x64<br>
+Promotional Code: 我是高手我不需要发工单 - 40.00% Recurring Discount $-4.56 USD<br>
+------------------------------------------------------<br>
+Sub Total: $6.84 USD<br>
+Credit: $0.00 USD<br>
+Total: $6.84 USD<br>
+------------------------------------------------------</p>
+<p>You can login to your client area to view and pay the invoice at <a href="https://my.rfchost.com/viewinvoice.php?id=143058">https://my.rfchost.com/viewinvoice.php?id=143058</a></p>
+</body></html>`
+
+func assertRealTemplateInvoice(t *testing.T, inv *core.Invoice) {
+	t.Helper()
+	if inv.Status != core.PendingConfirmation {
+		t.Fatalf("status = %q, want pending", inv.Status)
+	}
+	if len(inv.ReviewReasons) != 0 {
+		t.Fatalf("review reasons = %v, want none", inv.ReviewReasons)
+	}
+	if inv.Number != "143058" {
+		t.Fatalf("number = %q", inv.Number)
+	}
+	assertMoneyValue(t, "amount due", inv.AmountDue, 684, "USD")
+	if inv.DueDate != core.Date("2026-10-24") {
+		t.Fatalf("due date = %q", inv.DueDate)
+	}
+	if len(inv.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(inv.Items))
+	}
+	item := inv.Items[0]
+	if item.ProductModel == nil || *item.ProductModel != "JP2-CO-Micro" {
+		t.Fatalf("model = %v", item.ProductModel)
+	}
+	if item.Hostname == nil || *item.Hostname != "lk9I8F2Mdvc.rfchost.com" {
+		t.Fatalf("hostname = %v", item.Hostname)
+	}
+	if item.OperatingSystem == nil || *item.OperatingSystem != "Debian-12.0_x64" {
+		t.Fatalf("os = %v", item.OperatingSystem)
+	}
+	if item.ServiceStart == nil || *item.ServiceStart != core.Date("2026-10-24") {
+		t.Fatalf("service start = %v", item.ServiceStart)
+	}
+	if item.ServiceEnd == nil || *item.ServiceEnd != core.Date("2026-11-23") {
+		t.Fatalf("service end = %v", item.ServiceEnd)
+	}
+	assertMoney(t, "original price", item.OriginalPrice, 1140, "USD")
+	assertMoney(t, "discount amount", item.DiscountAmount, -456, "USD")
+	assertMoney(t, "final price", item.FinalPrice, 684, "USD")
+	if item.PromotionalCode == nil || *item.PromotionalCode != "我是高手我不需要发工单" {
+		t.Fatalf("promo code = %v", item.PromotionalCode)
+	}
+	if item.DiscountType == nil || *item.DiscountType != "Recurring Discount" {
+		t.Fatalf("discount type = %v", item.DiscountType)
+	}
+	if item.DiscountBasisPoints == nil || *item.DiscountBasisPoints != 4000 {
+		t.Fatalf("basis points = %v", item.DiscountBasisPoints)
+	}
+}
+
+func TestParseRealTemplateInlineItemLine(t *testing.T) {
+	inv, err := parseFixture(t, realTemplateText)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertRealTemplateInvoice(t, inv)
+}
+
+func TestParseRealTemplateHTML(t *testing.T) {
+	email := fixtureEmail(t)
+	email.From = core.Address{Name: "RFCHOST", Address: "no-reply@rfchost.com"}
+	email.TextBody = ""
+	email.HTMLBody = realTemplateHTML
+	inv, err := NewRFCHOST().Parse(email)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertRealTemplateInvoice(t, inv)
+	if inv.URL != "https://my.rfchost.com/viewinvoice.php?id=143058" {
+		t.Fatalf("url = %q", inv.URL)
+	}
+}
+
+func TestParsePromoLineWithoutInlineDiscount(t *testing.T) {
+	body := strings.Replace(realTemplateText,
+		"Promotional Code: 我是高手我不需要发工单 - 40.00% Recurring Discount $-4.56 USD",
+		"Promotional Code: 我是高手我不需要发工单", 1)
+	body = strings.ReplaceAll(body, "$6.84 USD", "$11.40 USD")
+	inv, err := parseFixture(t, body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	item := inv.Items[0]
+	if item.PromotionalCode == nil || *item.PromotionalCode != "我是高手我不需要发工单" {
+		t.Fatalf("promo code = %v", item.PromotionalCode)
+	}
+	if item.DiscountAmount != nil || item.DiscountBasisPoints != nil || item.DiscountType != nil {
+		t.Fatalf("discount fields = %v/%v/%v, want nil", item.DiscountAmount, item.DiscountBasisPoints, item.DiscountType)
+	}
+	assertMoney(t, "final price", item.FinalPrice, 1140, "USD")
+	if inv.Status != core.PendingConfirmation {
+		t.Fatalf("status = %q, want pending", inv.Status)
+	}
+}
+
 func TestParseHTMLTemplate(t *testing.T) {
 	email := fixtureEmail(t)
 	email.TextBody = ""

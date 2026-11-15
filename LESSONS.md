@@ -321,3 +321,9 @@
 - 修复 commit: 本次 T13 实现提交（SHA 见 result.txt）；沿用既有 REMINDER_TIME 的宽松语义，测试改用真正非法值 "9am" 与 "24:00"。
 - Done right: 明确要求严格 HH:MM 时用正则或自定义解析；仅需合法性时与既有 REMINDER_TIME 保持一致，并用真正非法值做回归测试。
 - Seen 1× (2026-11-15).
+
+**账单解析测试样例必须取自真实邮件原始格式，不能手工重排分行，否则真实邮件会静默丢字段。**
+- 用户提供真实 RFCHOST 账单原始邮件（2026-10-13）后复现：商品行把服务周期和价格放在同一行、优惠码与折扣子句也在同一行；testdata fixture 被手工拆成多行，旧正则只匹配拆行格式，真实邮件解析出 items=0，型号/主机名/系统/周期/原价/折扣/优惠码全部丢失，通知看不到明细。
+- 修复 commit：待定位（本次解析器修复提交）。
+- Done right: itemHeaderRe 允许 hostname 后同行携带 "(start - end) price"，Promotional Code 行用 inlineDiscountRe 拆出折扣子句；新增 TestParseRealTemplateInlineItemLine / TestParseRealTemplateHTML 直接断言真实模板的 item 字段，同时保留拆行 fixture 覆盖旧格式。
+- Seen 1× (2026-11-16).
