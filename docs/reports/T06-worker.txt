@@ -1,0 +1,127 @@
+# T06 Storage Worker — Completion Report
+
+Branch: `task/T06-storage`
+Worktree: `/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t06`
+Owned path: `internal/storage/**` only. `LESSONS.md` appended as the allowed reporting exception.
+
+## Commits
+
+| Commit | Purpose |
+|---|---|
+| `eee47188bfa046287c7ff73fb61b8f547d71e06a` | `feat(storage): implement T06 module and tests` (19 files, module + tests) |
+| `b8c5980d5afea5d30451eb1a2bd7063e95893488` | `fix(storage): keep latest asset billing period and reject older replay` |
+| `b27b3fb` | `docs(lessons): record T06 storage review lessons` |
+
+Not committed (per spec): `result.txt`, `SPEC.md`. Pre-existing untracked `.omc/` was never staged.
+
+## Modified files (all under `internal/storage/`)
+
+Production:
+- `store.go` — `Open`, `Store`, pool-bound/transaction-bound `*repo`, bounded pool, DSN pragmas, nested-transaction reuse, error mapping, 0600 DB files.
+- `migrations.go` + `migrations/0001_init.sql` — embedded ordered migrations, `schema_migrations`, RFCHOST seed, full v1 schema.
+- `codec.go` — AES-256-GCM versioned envelope, AAD helpers, fixed-width UTC time codec, JSON/date/money/null helpers, diagnostic sanitizer, body hash.
+- `accounts.go` — accounts, encrypted credentials, folders, cursors, soft remove.
+- `emails.go` — remote identity, conservative fingerprint, aliases, attachments, listing, parse failures.
+- `invoices.go` — invoices, items, events, CAS transitions, reminders.
+- `outbox.go` — enqueue/claim/complete/fail/skip, per-part Telegram messages, lease expiry.
+- `assets.go` — conservative asset upsert, latest-period merge, links.
+- `security.go` — encrypted one-time sessions, settings, status.
+- `backup.go` — alias-safe `VACUUM INTO` backup.
+
+Tests (72 functions): `testutil_test.go`, `store_test.go`, `accounts_test.go`, `emails_test.go`, `invoices_test.go`, `outbox_test.go`, `security_test.go`, `assets_test.go`.
+
+## Behavior implemented
+
+- `storage.Open(ctx, path, key)` validates a 32-byte key, opens a bounded SQLite pool with `foreign_keys=1`, `busy_timeout=5000`, WAL, `synchronous=NORMAL`, `_txlock=immediate` on every connection, applies embedded migrations atomically, and chmods the DB/WAL/SHM to 0600.
+- In-memory stores use a random named URI per `Open` (`file:eig-<random>?mode=memory&cache=shared`) so independent Stores are isolated while one Store's pool shares its image.
+- `Store.Transaction` passes a transaction-scoped `core.Repository`; returning an error rolls back; nested `Transaction` reuses the same `*sql.Tx` to avoid pool deadlocks.
+- Full `core.Store` implementation: accounts/credentials/folders/cursors, emails/identities/attachments/parse failures, invoices/items/events/reminders, outbox/Telegram messages, assets, sessions/settings/status.
+- Email identity: Microsoft immutable message ID; IMAP folder+UIDVALIDITY+UID; account-scoped uniqueness; conservative cross-folder fingerprint (account + Message-ID + sender + received time + body hash) with alias retention. Same Message-ID with a different body stays distinct.
+- Invoice uniqueness `(account, provider, number)`; duplicates preserve paid/confirmed state and add all source-mail links; child IDs normalized; creation event recorded.
+- `TransitionInvoice` CAS inside a transaction; paid metadata + event atomic; same-target idempotent; undo clears confirmation; JSON snapshot kept consistent with scalar state.
+- `CreateReminder` only for pending invoices, validates calendar date, unique `(invoice_id, reminder_date)`, creates outbox in the same transaction (no orphan).
+- Outbox: dedup never resets, exclusive lease claim with `attempts++`, expired SENDING → UNKNOWN and retried, complete/fail/skip synchronize linked reminders, bounded sanitized failure codes, per-part recording/retrieval.
+- Assets: explicit identity (hostname or product ID) per provider/account; latest billing period updated as a pair; older invoice replay cannot overwrite period/model/OS/last invoice.
+- Sessions: AES-256-GCM with purpose+token AAD, expiry enforced, `GetSession` non-consuming, `ConsumeSession` atomic one-time (replay fails).
+- Credentials: AES-256-GCM with account AAD; plaintext token never stored; tamper/blob-swap fails authentication.
+- Backup: absolute-path alias checks, rejects any existing target (symlink/hardlink included), creates the target with `O_CREATE|O_EXCL` 0600, `VACUUM INTO`, removes only its own file on failure.
+
+## Actual commands and results
+
+```
+$ go build ./...
+BUILD_OK
+
+$ go vet ./internal/storage/...
+VET_OK
+
+$ test -z "$(gofmt -l internal/storage)"
+GOFMT_OK
+
+$ go test ./internal/storage/...
+ok  email-invoice-guard/internal/storage  (cached)
+
+$ go test -race ./internal/storage/...
+ok  email-invoice-guard/internal/storage  (cached)
+
+$ go test -cover ./internal/storage/...
+ok  email-invoice-guard/internal/storage  coverage: 80.8% of statements
+
+$ go test -list '.*' ./internal/storage | grep -c '^Test'
+72
+
+$ git diff --name-only eee4718^..HEAD -- go.mod go.sum internal/core docs SPEC.md AGENT.md
+(empty — frozen files untouched)
+
+$ git status --short
+?? .omc/        (pre-existing, never staged)
+```
+
+## Acceptance matrix
+
+| Criterion | Status |
+|---|---|
+| Public API compiles against frozen core (`var _ core.Store = (*Store)(nil)`) | SATISFIED |
+| `storage.Open`, `DB()`, `Backup`, full `core.Store` implemented (no stubs) | SATISFIED |
+| Real migrations, `schema_migrations` idempotent, WAL/FK/busy_timeout per connection, bounded pool, safe nested transactions | SATISFIED |
+| Transaction-scoped repository uses one `*sql.Tx` | SATISFIED |
+| JSON + indexed scalars; state transitions use current state and keep JSON consistent | SATISFIED |
+| AES-256-GCM 32-byte key, random nonce, version envelope, purpose/account/token AAD | SATISFIED |
+| Credentials and session payloads encrypted; no token plaintext | SATISFIED |
+| Session purpose+expiry validated; atomic consume; replay fails; read does not consume | SATISFIED |
+| Parameterized SQL for all caller data | SATISFIED |
+| Backup consistent with live WAL, safe bound path, 0600, key separate | SATISFIED |
+| Email identities (MS immutable ID; IMAP folder+UIDVALIDITY+UID), aliases, fingerprint, account isolation, same Message-ID different body distinct | SATISFIED |
+| Invoice unique business key, duplicate preserves confirmed state, all source links, normalized child IDs, creation event | SATISFIED |
+| CAS transition, atomic paid metadata/events, idempotent replay, undo clears confirmation | SATISFIED |
+| Reminder pending-only, unique date, outbox in same transaction, no orphan | SATISFIED |
+| Enqueue no reset; exclusive lease claim; expired SENDING → UNKNOWN retried; complete/fail/skip synchronization; bounded codes | SATISFIED |
+| `RecordParseFailure`, `DeliveryMessages`, `RecordTelegramMessage`, `ListTelegramMessages` | SATISFIED |
+| Every struct field round-trips, nullable pointers preserved | SATISFIED (email/invoice/asset/credential/session/cursor/message tests) |
+| RemoveAccount soft-disable, erase credentials/cursors, retain history, list disabled | SATISFIED |
+| Migration fresh/reopen, FK/unique, rollback (cursor+outbox), aliases/move/UID reuse, malicious input, duplicate paid invoice, concurrency, encryption/tamper/AAD/no plaintext, TTL/replay, backup restore incl. WAL, no pool deadlocks, race tests | SATISFIED |
+| `Limit<=0` full internal scan for invoices/assets; email listing stays bounded | SATISFIED (>100-row tests) |
+| Fixed-width UTC TEXT time ordering (same-second boundaries) | SATISFIED |
+| Only owned paths + LESSONS committed; go.mod/go.sum/core/docs untouched | SATISFIED |
+| No secrets, no runtime mocks/stubs, no child agents | SATISFIED |
+
+## Unresolved issues / limitations
+
+1. `RemoveAccount` cannot delete `oauth_sessions` rows because the frozen `SecureSession`/schema contracts carry no account association. Sessions are short-lived and one-time; credentials and cursors are erased as required.
+2. WAL/SHM companions are chmodded to 0600 after Open/migrations. SQLite may recreate a companion with its default mode after a checkpoint during runtime; the main DB and all backups are enforced 0600. A stricter umask/OS-level control is outside this package.
+3. `VACUUM INTO` is path-based. `O_EXCL` + `os.SameFile` defense prevents normal symlink/hardlink/relative aliases, but a local attacker able to replace the path between creation and VACUUM remains a TOCTOU risk; local filesystem trust is assumed.
+4. In-memory stores use `MaxOpenConns(1)`. Callers must use the transaction-scoped repository inside `Transaction` (the frozen contract) to avoid self-deadlock; all internal list methods close rows before child queries.
+5. Asset recency is keyed on `LastKnownServiceEnd`; observations without an end date never advance the stored period (they may only fill empty descriptive fields).
+6. Only the RFCHOST provider row is seeded; `provider_rules` is intentionally empty (T04 owns parser rules).
+
+## Dependency requests
+
+None. `modernc.org/sqlite v1.62.0` and all other versions were already pinned; `go.mod`/`go.sum` were not modified.
+
+## Security notes
+
+- No plaintext credentials, session payloads, or tokens are persisted or logged.
+- SQL is parameterized; the only dynamic SQL fragments are internal constant `WHERE` clauses.
+- `RecordParseFailure` sanitizes and bounds provider/reason text.
+- Backup never overwrites an existing file and cannot be redirected onto the live DB by relative/symlink/hardlink aliases.
+- No real credentials or live external accounts were used.

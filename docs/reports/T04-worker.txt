@@ -1,0 +1,116 @@
+# T04 Completion Report — RFCHOST Invoice Parser
+
+## Identity
+- Branch: `task/T04-invoice-parser`
+- Worktree: `/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t04`
+- Commit: `0a54cb7b550329ccbecd0908f4fbe8196a06705d` (fix: full discount type phrase)
+- Prior commit: `0aa97df793d38dcb9eda21f301076708610d2710` (initial T04 implementation)
+- Commit subjects: `feat(invoice-parser): implement T04 module and tests`, `fix(invoice-parser): preserve full discount type phrase`
+- Parent: `e67852b` (orchestrator core fix; only adds `IMAPConfig.TrustedProxyCIDRs`, no parser impact)
+
+## Modified files (allowlisted only)
+Production:
+- `internal/invoice/parser/registry.go` — `New`, `Registry.Register/Parse/Parsers`
+- `internal/invoice/parser/rfchost.go` — `NewRFCHOST`, sender/domain matching, text/HTML selection
+- `internal/invoice/parser/text.go` — CRLF/NBSP normalization and `x/net/html` → text
+- `internal/invoice/parser/fields.go` — field extraction, money/date/URL decoding
+- `internal/invoice/parser/items.go` — line-item and discount parsing
+- `internal/invoice/parser/validate.go` — checked integer arithmetic and review reasons
+
+Fixtures:
+- `internal/invoice/parser/testdata/rfchost_invoice.txt` — SPEC fixture stored verbatim (diffed against SPEC lines 18–42: identical)
+- `internal/invoice/parser/testdata/rfchost_invoice.html` — table/`&nbsp;` HTML template
+
+Tests:
+- `internal/invoice/parser/registry_test.go`
+- `internal/invoice/parser/rfchost_test.go`
+
+Reporting exception (committed):
+- `LESSONS.md` — one appended lesson (no secrets)
+
+Not committed: `result.txt`, `.omc/`. No changes to `internal/core`, `go.mod`, `go.sum`, docs, other workers.
+
+## Public API (exact)
+- `parser.New() *Registry` — registers RFCHOST only
+- `(*Registry).Register(core.InvoiceParser) error`
+- `(*Registry).Parse(context.Context, core.NormalizedEmail) (*core.Invoice, error)`
+- `(*Registry).Parsers() []core.ParserInfo`
+- `parser.NewRFCHOST() core.InvoiceParser`
+- Compile-time assertions: `core.ParserRegistry`, `core.InvoiceParser`
+
+## Implemented behavior
+- Registry rejects duplicate vendor/version with `core.ErrConflict`; invalid/nil metadata with `core.ErrInvalid`; `Parsers` returns an independent copy; unknown mail returns `core.ErrNoMatch`; a matched parser's invoice + error are returned together (non-fatal to pipeline).
+- Match requires a conservative RFCHOST sender (`rfchost.com` or subdomain, display-name tolerant) plus at least two explicit invoice signals (number, amount due, due date, subtotal, credit, total, trusted invoice URL). Partial invoices are still matched so Parse can record review diagnostics.
+- Parse prefers `TextBody`, falls back to `HTMLBody` via `golang.org/x/net/html` (no mailproc dependency); tolerates CRLF, blank lines, NBSP, table tags.
+- Extracts number, generated date, due date, payment method, currency, amount due, subtotal, credit, total, explicit `Account Balance`, trusted URL.
+- Payment method normalization only for explicit `Alipay+`; other values preserved.
+- Items: any count; model/hostname, service period, OS, original price, unicode promo code (spaces/special chars), full discount type phrase (e.g. `Recurring Discount`), negative amount, integer basis points, final price. Discounts attach to their own item block.
+- Mandatory: number, currency, due date, amount due. Invalid mandatory fields never produce `PENDING_CONFIRMATION`; missing number returns nil + `ErrReviewRequired`.
+- Review triggers: missing total, item/subtotal sum mismatch, subtotal − credit ≠ amount due, total mismatch, percent inconsistency beyond ±1 minor unit, negative original price/amount due/subtotal/credit/total, positive discount amount, discount > 100%, unordered item dates, URL id ≠ invoice number, untrusted URL.
+- Credit never fills `AccountBalance`; balance only from explicit `Account Balance`.
+- Documented credit presentation variant accepted: when credit ≠ 0, `Total == SubTotal` is allowed while `AmountDue == SubTotal − Credit`.
+- URL: exactly `https://my.rfchost.com/viewinvoice.php` with exactly one `id` query param equal to the invoice number; userinfo, port, fragment, redirect/extra query params rejected and URL left empty.
+- No floating point anywhere; all money arithmetic is checked `int64` (overflow detected).
+
+## Actual commands and results
+```
+$ go version
+go version go1.27.3 darwin/arm64
+
+$ gofmt -l internal/invoice/parser
+(no output)
+
+$ go build ./...
+(success)
+
+$ go vet ./internal/invoice/parser/
+(success)
+
+$ go test -race -count=1 ./internal/invoice/parser/...
+ok  email-invoice-guard/internal/invoice/parser  1.200s
+
+$ go test -cover ./internal/invoice/parser/...
+ok  email-invoice-guard/internal/invoice/parser  90.3% of statements
+
+$ go test -v ./internal/invoice/parser/... | grep -c '^=== RUN'
+51
+
+$ sed -n '18,42p' SPEC.md | diff - internal/invoice/parser/testdata/rfchost_invoice.txt
+(identical)
+```
+
+## Acceptance criteria (SPEC §5)
+| Criterion | Status |
+|---|---|
+| Public API compiles | SATISFIED |
+| Required behavior implemented | SATISFIED |
+| Injected mocks exercise failure/security paths | SATISFIED — parser has no repo/store dependency; fake `core.InvoiceParser` exercises registry match/no-match/error passthrough; failure/security via invalid fields, overflow, unsafe/redirect URLs |
+| No secrets or permanent stubs | SATISFIED — only literal `user:pass` test userinfo; no TODO/stub runtime |
+| Owned tests pass | SATISFIED — 51 tests, race-clean |
+| Dependencies untouched | SATISFIED — `go.mod`/`go.sum` unchanged |
+| Report and commit supplied | SATISFIED |
+
+## Codex review feedback addressed
+1. Match no longer requires all of number+amount+due; sender + ≥2 signals, so missing due/amount still yields REVIEW diagnostics; missing number yields nil + `ErrReviewRequired`. Tests added.
+2. `normalizePaymentMethod` only normalizes explicit `Alipay+`; other values preserved. Test added.
+3. Negative original price / amount due / credit / total, positive discount amount, and discount > 100% now force REVIEW. Tests added.
+4. Invoice URL `id` must equal the invoice number; redirect/extra query params rejected. Tests added.
+5. Added missing-mandatory candidate and conflict tests.
+6. Acceptance fix: `DiscountType` now preserves the full phrase (`Recurring Discount`), not just `Recurring`; the exact-sample test asserts the full value.
+
+## Unresolved issues / limitations
+- Parser has no repository dependency, so there is no `core.Repository`/`core.Store` fake to embed; the meaningful injected fake is `core.InvoiceParser` for registry behavior. Noted rather than adding a meaningless fake.
+- Credit presentation variant (`Total == SubTotal` with non-zero credit) is accepted conservatively; if real RFCHOST semantics differ, tighten this rule.
+- HTML conversion is intentionally simple (block → newline, cell → space); deeply nested layouts may need tuning.
+- Invoice number pattern is `[A-Za-z0-9][A-Za-z0-9_-]*`; extend if RFCHOST emits other characters.
+- No live vendor mail samples beyond the frozen fixture were available.
+
+## Dependency requests
+- None. Uses already-pinned `golang.org/x/net v0.62.0` (present in `go.mod`); no `go get`/`go mod tidy` run.
+
+## Security risks / limitations
+- Untrusted HTML is parsed with `x/net/html` and reduced to text; `script/style/head/title` are skipped.
+- Invoice URL is restricted to the fixed HTTPS host/path with a single `id` param matching the invoice number; userinfo, non-443 ports, fragments, redirect/extra params are rejected and never emitted as clickable.
+- Parser performs no network I/O and logs no bodies or credentials.
+- No secrets in source or tests; the only userinfo string is the literal non-secret `user:pass`.
+- Merchant recognition is descriptive, not proof of authenticity; the application never pays a vendor (architecture constraint).

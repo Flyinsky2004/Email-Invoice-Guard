@@ -1,0 +1,160 @@
+# T03 Completion Report — Mail Pipeline (mailproc + syncengine)
+
+Branch: `task/T03-mail-pipeline`
+Worktree: `/Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t03`
+Final commit (HEAD): `03f831a9e9472d820b23b6d838e54196b53e4d70` — `fix(sync): ignore stale IMAP BaselineAt on UID reset`
+Baseline-rebuild commit: `6737db1` — `fix(sync): honor provider baseline rebuilds atomically`
+Asset-safety commit: `a1e16ee` — `fix(sync): skip asset linker for review invoices`
+Review-fix commit: `5acdd4e` — `fix(sync): address T03 review findings`
+Implementation commit: `2f158e5` — `feat(mail-pipeline): implement T03 module and tests`
+
+## 1. Modified files (committed)
+
+| File | Purpose |
+|---|---|
+| `internal/mailproc/html.go` | `HTMLToText`: strips script/style/head/comments, decodes entities, keeps paragraph breaks, safe http/https links, never truncates |
+| `internal/mailproc/normalize.go` | `Normalize`: immutable copy, HTML→text fallback, plain-text whitespace normalization, safe link extraction/merge |
+| `internal/mailproc/classify.go` | `Classify`: invoice/security/maintenance/promotion/other with forwarded-prefix handling (no filtering) |
+| `internal/mailproc/html_test.go` | 6 HTML conversion tests |
+| `internal/mailproc/normalize_test.go` | 5 normalization/immutability/long-body tests |
+| `internal/mailproc/classify_test.go` | 3 classification tests (table-driven + forwarded + HTML fallback) |
+| `internal/sync/engine.go` | `New`, `Engine`, `SyncAll`, `SyncAccount`, `Run`, keyed per-account lock with bounded wait, bounded LastError write, safe error codes, sync interval setting |
+| `internal/sync/folder.go` | Folder discovery (Inbox only), stored-preference preservation, per-folder baseline/cursor paging, UIDVALIDITY reset, phase calculation |
+| `internal/sync/process.go` | Normalize/Classify/parse outside transaction, per-page enabled re-check, atomic email+invoice+assets+delivery+cursor commit, parse diagnostics, fingerprint, reason sanitization |
+| `internal/sync/errors.go` | Non-leaking provider/storage/disabled sentinels and bounded safe codes |
+| `internal/sync/fakes_test.go` | Transactional fake Store/Repository, fake MailSource, ParserRegistry, AssetLinker, canonical-ID mode |
+| `internal/sync/engine_test.go` | 23 pipeline behavior and regression tests |
+| `LESSONS.md` | One appended lesson (test assertion vs real normalized output) |
+
+No changes to `internal/core/**`, `go.mod`, `go.sum`, docs, SPEC.md, or other worktrees.
+
+## 2. Behavior implemented
+
+- `mailproc.Normalize(core.NormalizedEmail) core.NormalizedEmail`: returns a deep-enough copy; fills `TextBody` from `HTMLBody` when text is absent; normalizes line endings/trailing whitespace without collapsing meaningful plain-text spacing; preserves full body length; extracts and merges only safe absolute `http`/`https` links (no userinfo/control chars); never renders HTML; never mutates input.
+- `mailproc.HTMLToText(string) string`: removes comments, `<script>`, `<style>`, `<head>`; converts block tags to paragraph breaks; renders anchors as `text (url)` only for safe links; decodes entities; collapses HTML whitespace; preserves complete body.
+- `mailproc.Classify(core.NormalizedEmail) core.Classification`: deterministic weighted keyword matching (subject weight 3, body weight 1), priority invoice/security/maintenance/promotion/other; strips `Fwd:`/`FW:`/`Re:` for matching but never filters forwarded mail.
+- `syncengine.New(store, sources, parsers, linker, cfg, logger) *Engine`: exact frozen signature.
+- `SyncAll`: lists accounts, skips disabled, runs enabled accounts with semaphore bound 4, joins sanitized errors; one failing account does not stop others.
+- `SyncAccount`: keyed per-account lock shared by manual and periodic calls; lock acquisition is bounded (30s default, `engine.lockWait` overridable in tests) and honors context cancellation so shutdown is never blocked.
+- `LastError`: persisted by re-reading the live account inside a transaction and updating only `LastError`/`UpdatedAt`; a stale in-flight snapshot can never re-enable a concurrently removed/disabled account. The write uses `context.WithoutCancel` plus a 5s deadline.
+- Baseline: first sync persists `BaselineAt` cursor before any remote call; cutoff `BaselineAt-24h`; phases `historical` (no outbox, no invoice), `recent_initial`, `bootstrap_live`, then `incremental`.
+- Folders: discovered only when none stored; discovered Inbox enabled, others disabled; stored explicit enabled preferences preserved; disabled folders never fetched.
+- Page processing: Normalize + Classify + parser outside transaction; before commit the live account is re-read and must still be enabled; transaction saves canonical email/identities, new valid/review invoice, assets via injected `linker.Reconcile(ctx, tx, invoice)`, exactly one delivery, and the cursor; rollback discards all page writes and leaves the pre-remote baseline cursor intact.
+- Delivery kinds follow the T07 contract: `email` for ordinary mail, `invoice` for invoice-linked mail. A new email referencing an existing invoice still gets an `invoice` notification pointing at that invoice, while the invoice's payment state is untouched and no duplicate invoice row is created.
+- Asset safety: only a newly created, sufficiently validated `PENDING_CONFIRMATION` invoice invokes `linker.Reconcile`. `REVIEW_REQUIRED` invoices never update asset last-invoice/service-period state automatically, but still receive an `invoice` notification and retain their original source email entry.
+- Parser failure: diagnostic only; mail is still saved and delivered, cursor advances, reason bounded to 200 runes/control-stripped and persisted in `X-Parse-Failure` header plus `RecordParseFailure` with the canonical EmailID and vendor provider ID (`invoice.ProviderID`, e.g. `rfchost`) — never the provider message ID.
+- Parser contract: an invoice returned together with a non-nil error is forced to `REVIEW_REQUIRED` with a bounded review reason; it is never defaulted to `PENDING_CONFIRMATION`.
+- Canonical identity: `invoice.SourceEmailID` is set from the email returned by `SaveEmail` inside the transaction, so a storage-layer canonical ID is used.
+- Duplicate handling: remote identity/fingerprint replay creates no second email/delivery; a new email referencing an existing invoice is still delivered while only one invoice row exists; existing paid state is preserved.
+- UIDVALIDITY change: rebuilds that folder's baseline before processing, so old mail is stored historical and deduped rather than replayed.
+- Baseline rebuild: an explicit `NextCursor.BaselineAt` change (Microsoft 410) or a UIDVALIDITY change starts a new baseline. The current page is classified against the new baseline and the new cursor is committed atomically with the page, never inheriting the old `BaselineComplete` flag; historical mail is not pushed.
+- IMAP baseline safety: when only UIDVALIDITY changes, the rebuilt baseline is `now`; a retained non-zero `NextCursor.BaselineAt` from IMAP is treated as stale and never used. IMAP `BaselineAt` stays engine-managed across pages, and a failed page transaction leaves the old cursor intact.
+- `Run`: periodic loop, re-reads `sync_interval_seconds` between passes, falls back to `cfg.SyncInterval`, then 60s; returns nil on context cancellation.
+
+## 3. Actual commands and results
+
+```
+$ go version
+go version go1.27.3 darwin/arm64
+
+$ gofmt -w internal/mailproc internal/sync
+(no output)
+
+$ go test ./internal/mailproc/... ./internal/sync/...
+ok  	email-invoice-guard/internal/mailproc	(cached)
+ok  	email-invoice-guard/internal/sync	0.513s
+
+$ go vet ./internal/mailproc/... ./internal/sync/...
+(no output)
+
+$ go test -race -cover ./internal/mailproc/... ./internal/sync/...
+ok  	email-invoice-guard/internal/mailproc	(cached)	coverage: 92.0% of statements
+ok  	email-invoice-guard/internal/sync	1.552s	coverage: 83.6% of statements
+
+$ git status --short   (before final commit)
+M  internal/sync/engine.go
+M  internal/sync/engine_test.go
+M  internal/sync/errors.go
+M  internal/sync/fakes_test.go
+M  internal/sync/process.go
+M  LESSONS.md
+?? .omc/            # session state, not committed
+
+$ git commit -m "fix(sync): address T03 review findings"
+[task/T03-mail-pipeline 5acdd4e] fix(sync): address T03 review findings
+6 files changed, 312 insertions(+), 58 deletions(-)
+
+$ git commit -m "fix(sync): skip asset linker for review invoices"
+[task/T03-mail-pipeline a1e16ee] fix(sync): skip asset linker for review invoices
+2 files changed, 45 insertions(+), 1 deletion(-)
+
+$ git commit -m "fix(sync): honor provider baseline rebuilds atomically"
+[task/T03-mail-pipeline 6737db1] fix(sync): honor provider baseline rebuilds atomically
+2 files changed, 146 insertions(+), 19 deletions(-)
+
+$ git commit -m "fix(sync): ignore stale IMAP BaselineAt on UID reset"
+[task/T03-mail-pipeline 03f831a] fix(sync): ignore stale IMAP BaselineAt on UID reset
+2 files changed, 115 insertions(+), 7 deletions(-)
+
+$ git rev-parse HEAD
+03f831a9e9472d820b23b6d838e54196b53e4d70
+```
+
+Test count: 14 top-level tests in `internal/mailproc` (including 6 classification subtests) and 28 top-level tests in `internal/sync` — 42 total, above the 18+ requirement.
+
+## 4. Acceptance criteria matrix
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| Frozen public API compiles (`mailproc.Normalize/Classify/HTMLToText`, `syncengine.New`) | SATISFIED | `go test`/`go vet` compile both packages |
+| Normalize strips scripts/styles, decodes entities, keeps URLs/paragraphs, no HTML rendering, safe links only | SATISFIED | `TestHTMLToText*`, `TestNormalizeExtractsOnlySafeLinks` |
+| Full body never truncated; fixture fields not corrupted | SATISFIED | `TestHTMLToTextPreservesLongBody`, `TestNormalizePreservesLongTextBody`, `TestNormalizePreservesFixtureFields` |
+| Categories invoice/security/maintenance/promotion/other; forwarding never filtered | SATISFIED | `TestClassifyCategories`, `TestClassifyForwardedInvoiceIsNotFiltered` |
+| SyncAll concurrent (bound 4), disabled skipped, per-account lock shared manual/periodic | SATISFIED | `TestSyncAllBoundedConcurrency`, `TestSyncAllSkipsDisabledAccounts`, `TestSyncAccountSerializesOverlap` |
+| Lock wait bounded; shutdown not blocked | SATISFIED | `TestLockWaitDeadline` (returns `context_deadline`) |
+| One account failure isolated; joined error without secrets; LastError safe code persisted | SATISFIED | `TestSyncAllIsolatesAccountFailure` (asserts no `SUPERSECRET` leak) |
+| LastError write cannot re-enable a concurrently disabled account | SATISFIED | `TestPersistLastErrorPreservesDisabledState` (transactional re-read) |
+| Baseline cursor persisted before remote access | SATISFIED | `TestFirstSyncBaselinePhases`, `TestTransactionRollbackRestoresCursor` |
+| Folder discovery Inbox-only; explicit prefs preserved; disabled folder not fetched | SATISFIED | `TestFolderDiscoveryEnablesInboxOnly`, `TestDisabledFolderNotFetched` |
+| Normalize/Classify/parser outside transaction; atomic email/invoice/assets/delivery/cursor | SATISFIED | `processPage`; `TestTransactionRollbackRestoresCursor` |
+| Enabled state re-checked before each page commit | SATISFIED | `TestPageCommitRechecksEnabled` |
+| Parser failure diagnostic, mail delivered, cursor advances | SATISFIED | `TestParserFailureStillDelivers` |
+| Parse failure records vendor provider ID, not provider message ID | SATISFIED | `TestParserFailureStillDelivers`, `TestParserReviewInvoiceForcedReviewRequired` (`rfchost`) |
+| Parser invoice + error forces REVIEW_REQUIRED | SATISFIED | `TestParserReviewInvoiceForcedReviewRequired` |
+| Invoice `SourceEmailID` uses canonical saved email ID | SATISFIED | `TestInvoiceSourceEmailIDUsesCanonicalID` |
+| Existing invoice paid state preserved; duplicate reference delivers new invoice notification, no duplicate invoice | SATISFIED | `TestExistingPaidInvoicePreserved`, `TestDuplicateInvoiceReferenceDeliversNewEmail` |
+| REVIEW_REQUIRED invoice never updates assets; only validated new invoice calls linker | SATISFIED | `TestReviewInvoiceSkipsAssetLinker`, `TestValidInvoiceEnhancedDelivery` |
+| Delivery kinds match T07 (`email`/`invoice`) | SATISFIED | All delivery assertions use `deliveryKindEmail`/`deliveryKindInvoice` |
+| Baseline phases historical/recent_initial/bootstrap_live/incremental; historical no outbox/invoice | SATISFIED | `TestFirstSyncBaselinePhases` |
+| SaveCursor atomic with work; rollback restores cursor; page replay safe | SATISFIED | `TestTransactionRollbackRestoresCursor`, `TestCrashReplayDedup` |
+| UID reset treated safely, baseline rebuilt | SATISFIED | `TestUIDValidityResetRebuildsBaseline` |
+| Provider BaselineAt/UIDVALIDITY rebuild starts a new baseline and commits it atomically | SATISFIED | `TestBaselineAtChangeRebuildsBaseline`, `TestUIDValidityResetPersistsBaselineWhilePaging` |
+| UID reset ignores stale non-zero IMAP BaselineAt; >24h historical mail stays out of outbox; rollback keeps old cursor | SATISFIED | `TestUIDValidityResetWithStaleBaselineAt`, `TestUIDValidityResetRollbackKeepsOldCursor` |
+| Sync interval setting read between passes; default 60s; graceful cancellation | SATISFIED | `TestSyncIntervalSetting`, `TestRunStopsOnContextCancellation` |
+| 18+ meaningful tests, race clean, vet clean | SATISFIED | 37 tests; `go test -race`, `go vet` |
+| Only owned paths committed; dependencies untouched | SATISFIED | `git diff --cached --name-only` shows only `internal/sync/**`, `LESSONS.md` for the fix commit; implementation commit touched only `internal/mailproc/**`, `internal/sync/**`, `LESSONS.md` |
+
+## 5. Unresolved issues / integration notes
+
+- T08 stage B must inject the real `core.ParserRegistry` and `core.AssetLinker`; `nil` linker/parser is supported only for tests.
+- Provider paging semantics (Graph delta links, IMAP UID snapshots) are delegated to `core.MailSource`; the engine consumes `SyncBatch` and never assumes a UID across folders.
+- Folder discovery runs only when no stored folders exist (per SPEC “discover folders if absent”); folders added later are not auto-imported.
+- Historical mail skips the parser entirely, so no invoice or parser diagnostic is produced for it (per “no formal active invoice”).
+- For a hard parser error with no invoice, the vendor provider ID may be empty because the frozen `ParserRegistry` interface exposes no per-email vendor lookup; when a review invoice is returned, `invoice.ProviderID` is used.
+- Review invoices receive an `invoice` delivery; a new email referencing an already-existing invoice also receives an `invoice` delivery without touching payment state.
+- No live Microsoft/QQ/Telegram credentials or external accounts were used.
+- Full `go test ./...` and E2E remain for T08 after sibling modules merge.
+
+## 6. Dependency requests
+
+None. No `go.mod`/`go.sum` changes, no new third-party packages; implementation uses the Go standard library plus frozen `internal/core`.
+
+## 7. Security risks / limitations
+
+- `HTMLToText` is regex-based, not a full HTML parser. It removes script/style/head/comment blocks, strips tags, decodes entities and never renders HTML; malformed/unterminated markup can leave text content but cannot execute or render.
+- Only absolute `http`/`https` URLs without userinfo/control characters are retained; `javascript:`, `data:`, `mailto:`, relative and credential-bearing URLs are dropped.
+- Provider errors are collapsed to bounded safe codes before returning or persisting; raw provider text is never included in joined errors or `LastError`.
+- Parser diagnostics are bounded to 200 runes with control characters removed; no credentials, tokens or full bodies are logged (slog emits account/folder IDs and codes only).
+- Deduplication uses remote identity plus a conservative sender/time/subject/body fingerprint; identical messages arriving in multiple folders collapse to one canonical email while aliases remain the storage layer’s responsibility.
+- Delivery is one enqueue per new email; downstream outbox semantics remain at-least-once (T06/T07), never exactly-once.
+- The engine performs no network calls inside the SQLite transaction; the injected linker participates in the caller’s transaction.

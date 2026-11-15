@@ -1,0 +1,220 @@
+T05 — Claude Code Worker 05 completion report
+=============================================
+
+Branch: task/T05-invoice-lifecycle
+Worktree: /Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t05
+Commit: 996e54467192403ec08f517973391687757f3ea6
+Message: feat(invoice-lifecycle): implement T05 module and tests
+Parent: e67852b fix(core): define explicit HTTPS reverse proxy trust boundary
+        (orchestrator commit, not part of this lane; it only adds
+        IMAPConfig.TrustedProxyCIDRs and does not affect T05 code)
+
+Modified files (all inside the allowlist)
+-----------------------------------------
+internal/invoice/lifecycle/service.go        (new, 145 lines)
+internal/invoice/lifecycle/service_test.go   (new, 383 lines)
+internal/reminder/scheduler.go               (new, 257 lines)
+internal/reminder/scheduler_test.go          (new, 548 lines)
+internal/assets/registry.go                  (new, 297 lines)
+internal/assets/registry_test.go             (new, 511 lines)
+
+No changes to internal/core, go.mod, go.sum, docs, SPEC.md, other worktrees, or
+global settings. result.txt and .omc/ are untracked/ignored.
+
+Behavior implemented
+--------------------
+1. lifecycle.New(store core.Store, allowed []int64) *Service
+   - Implements core.PaymentConfirmationService exactly.
+   - Whitelist is checked before any read or write; unauthorized calls return
+     core.ErrUnauthorized with zero repository effects (verified by fake call
+     counters).
+   - Confirm: PENDING_CONFIRMATION -> PAID_CONFIRMED, passing actor and UTC
+     timestamp to TransitionInvoice (repository writes confirmation metadata and
+     the event atomically).
+   - Undo: PAID_CONFIRMED -> PENDING_CONFIRMATION; repository clears
+     confirmation fields.
+   - Cancel: PENDING_CONFIRMATION / REVIEW_REQUIRED -> CANCELLED. Paid invoices
+     return core.ErrConflict and are never silently cancelled. Already-cancelled
+     invoices are an idempotent no-op.
+   - Same-target replay is idempotent, including after a concurrent winner: on
+     ErrConflict the service re-reads and returns the invoice when the target
+     state was already reached. Duplicate transitions add no event.
+   - Payment email content has no code path into this service; only explicit
+     whitelisted actor calls mutate state.
+   - The allowed slice is copied at construction to prevent caller mutation.
+
+2. reminder.New(store core.Store, cfg core.Config, logger *slog.Logger) *Scheduler
+   - Implements core.ReminderService (Tick, Run).
+   - Every Tick reads settings "timezone" and "reminder_time" via GetSetting;
+     cfg values are fallback only on core.ErrNotFound, then Asia/Taipei 09:00
+     defaults. Persisted empty/invalid zone or time returns core.ErrInvalid
+     (never panics). Other setting errors are returned.
+   - Before the local reminder time no work is done; at/after it runs a catch-up
+     pass, once per local calendar date.
+   - Lists PENDING_CONFIRMATION invoices, skips invoices whose CreatedAt local
+     date equals today (initial enhanced notification owns that day), then
+     re-reads each invoice inside Store.Transaction and re-checks status and
+     creation day before CreateReminder. Concurrent confirmation/cancellation
+     therefore produces no stale reminder.
+   - Reminder and outbox delivery are created together with
+     DeliveryPending status and no SentAt; creation never marks anything sent.
+     Payload contains Kind="reminder", InvoiceID and ReminderID. DedupKey is
+     reminder:<invoiceID>:<local-date>. The persistent
+     UNIQUE(invoice_id, reminder_date) constraint is the final restart/concurrent
+     guard; a false CreateReminder result is not an error and creates no second
+     task. Retries remain owned by the outbox.
+   - Reminder text derives overdue days from the due calendar Date via
+     core.DaysUntil, never from invoice status.
+   - Run performs an immediate tick, then ticks on a short context-aware interval
+     (30s default). Context cancellation returns nil; invalid persisted
+     configuration returns core.ErrInvalid; transient errors are logged and
+     retried on the next tick.
+
+3. assets.New() *Registry implementing core.AssetLinker
+   - Reconcile(ctx, repo, invoice) uses only the caller-supplied Repository; no
+     internal Store and no nested transaction. No network I/O.
+   - Requires explicit identity: provider + account + hostname, or provider +
+     account + product ID. Items without either stay unlinked. Contradictory
+     hostname/product evidence and multiple matching assets stay unlinked; no
+     second asset is created for a conflicting identity.
+   - Duplicate hostname items inside one invoice are merged (non-null model/OS,
+     earliest start, latest end) and linked once.
+   - New assets store provider/account, hostname/product ID when explicit,
+     non-null model/OS/service dates, LastInvoiceID, timestamps.
+   - Existing exact assets are updated only when the invoice is not older:
+     service end >= known end, or (without service dates) invoice CreatedDate
+     strictly newer than the known period. Historical invoices are linked but
+     never regress service end, model/OS, or LastInvoiceID. Non-null invoice
+     fields update; null fields preserve existing values.
+   - Hostname matching is case-insensitive and trimmed. The reconciler never
+     infers that a host is running.
+
+Actual commands and results
+---------------------------
+$ go version
+go version go1.27.3 darwin/arm64
+
+$ gofmt -l internal/invoice/lifecycle internal/reminder internal/assets
+(no output; exit 0)
+
+$ go test ./internal/invoice/lifecycle/... ./internal/reminder/... ./internal/assets/...
+ok  email-invoice-guard/internal/invoice/lifecycle  0.314s
+ok  email-invoice-guard/internal/reminder           0.368s
+ok  email-invoice-guard/internal/assets             0.309s
+
+$ go vet ./internal/invoice/lifecycle/... ./internal/reminder/... ./internal/assets/...
+VET_OK (no diagnostics)
+
+$ go test -race -count=1 ./internal/invoice/lifecycle/... ./internal/reminder/... ./internal/assets/...
+ok  email-invoice-guard/internal/invoice/lifecycle  1.323s
+ok  email-invoice-guard/internal/reminder           1.378s
+ok  email-invoice-guard/internal/assets             1.322s
+
+$ go test -cover ./internal/invoice/lifecycle/... ./internal/reminder/... ./internal/assets/...
+ok  .../internal/invoice/lifecycle   coverage: 94.6% of statements
+ok  .../internal/reminder            coverage: 90.2% of statements
+ok  .../internal/assets              coverage: 89.6% of statements
+
+$ go test -v ... | grep -c '^=== RUN'
+75 test cases (including subtests), all passing.
+
+$ go build ./...
+BUILD_OK (no storage package dependency required)
+
+$ git status --short (before commit)
+?? .omc/
+?? internal/assets/
+?? internal/invoice/
+?? internal/reminder/
+
+$ git diff --name-only / git diff --cached --name-only
+(empty before staging; only owned paths staged)
+
+$ git rev-parse HEAD
+996e54467192403ec08f517973391687757f3ea6
+
+Acceptance matrix
+-----------------
+[PASS] Public API compiles: lifecycle.New, reminder.New, assets.New signatures
+       match docs/contracts.md; interfaces core.PaymentConfirmationService,
+       core.ReminderService and core.AssetLinker satisfied.
+[PASS] Whitelist verified before reads/mutations; forbidden actors cause zero
+       store calls (tests assert transition/read counters).
+[PASS] pending->paid, paid->pending, pending/review->cancelled; paid cancel is
+       ErrConflict; illegal transitions ErrConflict; same-target replay
+       idempotent; event written exactly once under concurrent confirmation.
+[PASS] Confirm passes actor and UTC timestamp; repository owns atomic
+       compare/write/event.
+[PASS] Payment emails cannot change state (no email path; non-whitelisted actor
+       test).
+[PASS] Scheduler reads timezone/reminder_time each Tick with cfg fallback only
+       on ErrNotFound; defaults Asia/Taipei 09:00; invalid values return errors.
+[PASS] Before 09:00 no jobs; at/after 09:00 catch-up; once per local date;
+       same-day-created invoices skipped; prior-day and overdue invoices
+       reminded; review/paid/cancelled skipped.
+[PASS] List then transactional re-read; concurrent confirmation/cancellation
+       skips reminder.
+[PASS] Reminder+outbox created together with InvoiceID+ReminderID payload;
+       PENDING status, no SentAt; false duplicate result creates no second task;
+       restart/concurrent ticks do not duplicate.
+[PASS] Run ticks on a short context-aware interval, stops on cancellation, and
+       returns core.ErrInvalid for invalid configuration instead of panicking.
+[PASS] DST spring-forward/fall-back local-day behavior tested with
+       America/New_York.
+[PASS] Assets use the caller's Repository only; explicit identity only; missing
+       or ambiguous identity stays unlinked; no host-running inference.
+[PASS] Renewal updates latest non-null fields and LastInvoiceID; historical
+       invoice links without regressing newer service end or LastInvoiceID;
+       equal service end updates; created-date fallback tested.
+[PASS] Multiple VPS items and duplicate hostname dedup inside one invoice.
+[PASS] Different account/provider stay separate; case-insensitive hostname.
+[PASS] Nullable fields preserved.
+[PASS] Fakes embed core.Repository/core.Store, override only called methods, and
+       compile without the storage package.
+[PASS] gofmt, package tests, vet, race, coverage, scope check and commit done.
+
+Unresolved issues / integration notes
+-------------------------------------
+1. Storage contract assumptions must be verified in T08 against the real
+   implementation:
+   - TransitionInvoice returns ErrConflict on illegal source state, returns the
+     invoice without a new event when already at the target, writes confirmation
+     fields on PAID_CONFIRMED, and clears them on undo.
+   - CreateReminder atomically inserts reminder + outbox and returns false (no
+     error) on UNIQUE(invoice_id, reminder_date) conflict.
+   - ListAssets treats AssetFilter.Limit == 0 as unlimited. If storage requires
+     an explicit limit, T08 should pass a bound; no shared contract defines it.
+2. Run's 30s tick interval is a private default; no frozen config key exists for
+   it. The dynamic settings read covers timezone/reminder_time only.
+3. Reminder text is intentionally plain (invoice number, formatted amount, due
+   date, overdue days). The Telegram worker owns HTML escaping and 4096-unit
+   splitting.
+4. Assets treats a hostname match with a conflicting non-null product ID as
+   ambiguous and leaves it unlinked rather than creating a duplicate host row.
+   Storage should enforce one explicit identity per account/provider.
+5. No live Microsoft/QQ/Telegram credentials or network calls were used.
+
+Dependency requests
+-------------------
+None. No go.mod/go.sum changes and no shared contract changes were required.
+
+Security risks / limitations
+----------------------------
+- No secrets, tokens, credentials, or mail bodies are logged. Lifecycle logs
+  invoice ID, from/to status and actor user ID; reminder logs invoice ID, date
+  and sanitized errors only.
+- State changes require an explicitly whitelisted actor; email content cannot
+  trigger a transition. Paid invoices cannot be cancelled without an explicit
+  undo first.
+- Amounts use core.Money integer minor units; dates use validated core.Date
+  calendar strings; overdue is calendar-based and DST-safe.
+- Assets stay unlinked on missing/ambiguous/contradictory identity and never
+  infer runtime state.
+- No network I/O occurs inside Store.Transaction.
+- Practical architecture limit (outside this module): an external Telegram send
+  already in flight cannot be recalled atomically with a local payment change;
+  the outbox handles at-least-once retries. Documented in docs/architecture.md.
+
+LESSONS.md
+----------
+No new mistakes occurred during this lane; no LESSONS.md entry was added.

@@ -1,0 +1,98 @@
+T01 — Microsoft provider + OAuth callback — completion report (rev 2)
+
+Branch: task/T01-microsoft-provider
+Worktree: /Users/flyinsky/Documents/Coding/GoLang/.worktrees/eig-t01
+Commits:
+- dcf6c3c4f8c5532776d7e3629a9df22b28764df8 feat(microsoft-provider): implement T01 module and tests
+- 78b3680706022abae9ea809d05899f56fce2e7ca chore(lessons): record T01 review findings and fixes
+- f962f0ba6de956106bd1eebc9261ae983b4b0d0c fix(microsoft-provider): resolve Graph folder roles and stream large bodies
+- 8b6f76c29d881036d70c918d375f760e92ef7b82 chore(lessons): record Graph folder and streaming review findings
+- 4fc35ed2824e84099ad17bed7dbe8e8b5f16166a fix(microsoft-provider): paginate attachment metadata and scope attachment ids
+- e1417352917d94d3d4a3b27bc3dfb72babaca114 chore(lessons): record attachment pagination review finding
+
+Modified files (all inside allowlist)
+- internal/providers/microsoft/source.go
+- internal/providers/microsoft/oauth.go
+- internal/providers/microsoft/token.go
+- internal/providers/microsoft/graph.go
+- internal/providers/microsoft/html.go
+- internal/providers/microsoft/fakes_test.go
+- internal/providers/microsoft/oauth_test.go
+- internal/providers/microsoft/graph_test.go
+- internal/httpserver/oauth/handler.go
+- internal/httpserver/oauth/handler_test.go
+- LESSONS.md (append-only entries for both review rounds)
+
+Behavior implemented
+- microsoft.New(repo, cfg, client) *Source; Type/ListFolders/Sync (core.MailSource) and Begin/CompleteAuthorization (core.AccountOnboarding).
+- OAuth: random state (32 bytes) + verifier (48 bytes, base64url), S256 challenge, session keyed by SHA-256(state), purpose-bound, TTL (default 10m), one-time ConsumeSession, actor bound into payload and applied as account OwnerUserID.
+- Defaults: tenant "consumers", authority login.microsoftonline.com, Graph v1.0; scopes "Mail.Read offline_access User.Read" (User.Read only for GET /me address discovery).
+- CompleteAuthorization: consumes session, exchanges code with code_verifier, validates /me mail or userPrincipalName, writes account+credential in one Store.Transaction when the repository is a core.Store, otherwise sequentially. Same provider+address reauthorization reuses the existing account ID and CreatedAt; a different owner is rejected with core.ErrUnauthorized.
+- Refresh: per-account mutex, independent accounts, rotated refresh token persisted, old token preserved when absent, proactive refresh near expiry, 401 refresh once then retry, invalid_grant/interaction_required/consent_required/login_required -> core.ErrReauthorization. No credentials in errors or logs.
+- Graph: Prefer IdType="ImmutableId" on every Graph request; HTML body preference with local HTML->text normalization; pinned Graph/authority origins before bearer attachment; per-request redirect pinning (a redirect may not leave the origin of the request that produced it); HTTPS enforced except explicitly configured loopback mocks.
+- Folders (rev 2): Graph v1.0 mailFolder has no wellKnownName property. Roles are resolved through GET /me/mailFolders/{inbox|sentitems|drafts|deleteditems|junkemail}?$select=id and matched by folder id, so localized names such as "收件箱" map correctly. The real listing selects only id,displayName,parentFolderId,childFolderCount; childFolders are traversed recursively (depth and page bounds) so nested custom folders are discoverable. Inbox is enabled by default; stored enabled choices (including custom child folders) are preserved. Missing well-known folders (404) are skipped.
+- Delta: per-folder delta, bounded $top=50, opaque nextLink/deltaLink preserved as candidate cursor (provider never persists), full first traversal builds baseline, local historical classification (no receivedDateTime filter), 410 rebuilds a safe baseline, tombstones skipped without notification, recipients/sender/message-id/headers/body/webLink mapped, conservative cross-folder fingerprint.
+- Attachments (rev 3): metadata is listed through GET /me/messages/{id}/attachments?$select=id,name,contentType,size and every @odata.nextLink page is traversed (no $expand, no contentBytes). Attachment ids are deterministic account-scoped 32-hex hashes of account+message+Graph id, so two accounts cannot collide and re-sync is stable. The raw Graph attachment id is intentionally not retained because attachments are never downloaded.
+- Response size (rev 2): successful Graph payloads are streamed through json.Decoder without a byte cap, so legitimate bodies larger than 8 MiB are delivered intact. Token/error responses remain bounded at 1 MiB.
+- HTML normalization (rev 2): uses golang.org/x/net/html (already pinned in go.mod as an indirect module; no go.mod/go.sum edit) to walk the DOM, skip script/style/head/noscript/template, emit block boundaries as newlines, decode entities and normalize whitespace. Text inside unknown or malformed elements is preserved.
+- Retry: 429/503 honor the full server Retry-After (no truncation), bounded attempts, context-aware sleeps; transport timeouts retried with capped local backoff.
+- oauth.New(source): GET-only callback, generic error bodies, no echo of state/code/errors, Cache-Control no-store, Referrer-Policy no-referrer, nosniff, CSP default-src 'none'.
+
+Review findings addressed (with regression tests)
+Round 1
+1. Transactional onboarding: Store.Transaction path + rollback test (fakeStore) proving no half-written account.
+2. Account reuse: existing ID/CreatedAt reused for same provider+address (case-insensitive), different owner rejected; tests cover reuse and takeover rejection.
+3. Retry-After: full value honored; test asserts 120s is not truncated and no retry before context expiry.
+4. Redirect pinning: CheckRedirect compares target origin with via[0]; tests cover token->Graph and Graph->authority cross-origin rejection with zero hits on the foreign server.
+Round 2 (official contract evidence)
+5. Removed the non-existent wellKnownName field from requests and mocks. Roles now come from well-known folder paths matched by id; tests assert no request ever contains wellKnownName, cover a Chinese inbox name, nested childFolders (child + grandchild + paginated child page) and a stored enabled custom child folder.
+6. Removed the 8 MiB cap on successful Graph responses; added a >8 MiB body regression test asserting the full prefix/suffix survives.
+7. Replaced regex HTML stripping with x/net/html parsing; tests cover script/style removal, unknown tags, Chinese text and entities.
+8. Replaced $expand=attachments with the paginated /attachments endpoint; the regression test serves two pages and asserts both filenames/sizes arrive, no contentBytes/expand is requested, and account-scoped 32-hex ids are deterministic across syncs.
+
+Actual commands and results (final rev 2)
+- go version go1.27.3 darwin/arm64
+- gofmt -l internal/providers/microsoft internal/httpserver/oauth -> (empty)
+- go build ./internal/providers/microsoft/... ./internal/httpserver/oauth/... -> success
+- go vet ./internal/providers/microsoft/... ./internal/httpserver/oauth/... -> success
+- go test -count=1 ./internal/providers/microsoft/... ./internal/httpserver/oauth/... -> ok (both)
+- go test -race -count=1 ./internal/providers/microsoft/... ./internal/httpserver/oauth/... -> ok (both)
+- go test -cover -count=1 ... -> microsoft 83.5% of statements, oauth 100.0%
+- Test count: 52 Test functions
+- grep wellKnownName: only comments and the negative test assertion remain
+- go.mod/go.sum and internal/core untouched
+
+Acceptance matrix
+- Public API compiles exactly as contracts.md: SATISFIED
+- OAuth PKCE/state/TTL/single-use/actor binding: SATISFIED
+- Refresh rotation/independence/401-once/invalid_grant: SATISFIED
+- Immutable IDs, per-folder delta, pagination, 410 rebuild, tombstones: SATISFIED
+- Graph v1.0 folder fields valid; roles via well-known paths; localized inbox; nested custom folders: SATISFIED
+- Origin pinning for delta/redirect, HTTPS enforcement: SATISFIED
+- Folder mapping + Inbox-only default + preserved choices: SATISFIED
+- Normalized HTML/text (parser-based), recipients, headers, webLink, attachment metadata without download: SATISFIED
+- Attachment metadata pagination with account-scoped ids: SATISFIED
+- Successful responses stream without an 8 MiB cap; >8 MiB regression: SATISFIED
+- Bounded context-aware retry honoring Retry-After: SATISFIED
+- Tests use fake Repository/HTTP server; no real credentials; mocks do not invent Graph fields: SATISFIED
+- Owned formatting/vet/tests/race clean; dependencies untouched: SATISFIED
+- Commit and report supplied: SATISFIED
+
+Dependency / interface requests (no shared contract change made)
+- Storage: ListAccounts must include soft-disabled accounts, otherwise same-address re-add after RemoveAccount can still hit UNIQUE(provider,address). Provider reuses IDs only for rows it can see.
+- Storage: ConsumeSession must delete atomically and enforce purpose+expiry; SecureSession.Payload must be encrypted at rest (provider stores the PKCE verifier JSON there).
+- T08 wiring: mount oauth.New(ms) at /oauth/microsoft/callback and construct microsoft.New with cfg.Microsoft; GraphBaseURL/AuthorityURL overrides are test-only.
+- go.mod already pins golang.org/x/net v0.62.0 as indirect; the provider now imports x/net/html directly. No module edit was made; if the orchestrator later runs go mod tidy it should keep that version.
+
+Security risks and limitations
+- No live Microsoft app registration or real accounts were exercised; all HTTP is mocked.
+- PKCE verifier confidentiality depends on storage encrypting SecureSession.Payload as frozen schema requires.
+- Retry-After waits can be long (server value); only context cancellation/client timeout bounds them. This is intentional to avoid early retries.
+- Attachment metadata requires a second Graph request per message with hasAttachments, plus one request per additional page; a failure fails the page and is retried by the sync engine rather than silently dropping metadata.
+- Attachment ids are provider-derived hashes, not Graph ids. If a future feature needs to download an attachment, the Graph id must be re-fetched or the contract extended.
+- HTML->text is parser-based but intentionally conservative: it drops script/style/head content and collapses whitespace, so preformatted layout is not preserved.
+- Folder discovery issues 5 well-known probes plus recursive child listing per call; large folder trees cost additional requests but remain depth/page bounded.
+- Account takeover is rejected only when ListAccounts exposes the existing row; see storage dependency above.
+
+Unresolved issues
+- None blocking independent compile. Final T08 integration compile/wiring intentionally not performed.

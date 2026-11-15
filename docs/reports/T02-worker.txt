@@ -1,0 +1,225 @@
+T02 — QQ TLS IMAP provider + one-time HTTPS onboarding
+=======================================================
+
+Branch: task/T02-qq-imap-provider
+Latest commit: 6c22e186101097c60a4eef4bf71412ebe756d7db
+  fix(qq-imap-provider): preserve undecodable text and join MIME parts strictly
+Initial commit: 53f38047ee39a74f62a843719f7a188dc23b7af0
+  feat(qq-imap-provider): implement T02 module and tests
+
+Modified files (committed, all inside the allowlist plus LESSONS.md)
+--------------------------------------------------------------------
+internal/providers/imap/source.go
+internal/providers/imap/folders.go
+internal/providers/imap/sync.go
+internal/providers/imap/message.go
+internal/providers/imap/imaptest/server.go
+internal/providers/imap/source_test.go
+internal/providers/imap/folders_test.go
+internal/providers/imap/sync_test.go
+internal/providers/imap/message_test.go
+internal/providers/imap/helpers_test.go
+internal/providers/qq/onboarding.go
+internal/providers/qq/onboarding_test.go
+LESSONS.md (append-only, 5 review-driven lessons)
+
+Behavior implemented
+--------------------
+imap.New(repo, cfg) *Source
+  - core.MailSource.Type() == core.QQ.
+  - Defaults: imap.qq.com:993, ServerName imap.qq.com, 30s timeout, batch 20.
+  - Explicit allowlists: AllowedDomains (default qq.com/foxmail.com, subdomains
+    such as vip.qq.com accepted) and AllowedHosts (default imap.qq.com). An
+    arbitrary IMAP host is rejected before dialing.
+  - TLS always verifies hostname and roots; InsecureSkipVerify is rejected.
+  - Injectable Dial and TLSConfig for the fake TLS server tests.
+  - A deadlineConn clamps every SetDeadline/SetReadDeadline/SetWriteDeadline to
+    min(ctx deadline, now+cfg.Timeout), because go-imap installs its own 30s
+    per-command deadlines. Silent TLS peers and silent IMAP greetings fail
+    within the configured timeout.
+  - Context cancellation closes the connection.
+
+Source.Validate(ctx, address, authorizationCode)
+  - Normalizes/validates the QQ-hosted address, rejects empty/control-character
+    codes, performs a real TLS IMAP LOGIN with the third-party authorization
+    code (never a QQ password), then LOGOUT. Nothing is persisted.
+  - IMAP NO on LOGIN maps to core.ErrReauthorization; TLS/network failures stay
+    distinct.
+
+Source.ListFolders
+  - LIST "" "*", skips \Noselect/\NonExistent, maps SPECIAL-USE roles
+    (inbox/sent/drafts/trash/junk/archive/all/flagged/important) with a
+    conservative name fallback, enables INBOX only.
+  - Stable 32-hex folder IDs derived from account ID + mailbox name.
+
+Source.Sync
+  - SELECT snapshots UIDVALIDITY/UIDNEXT (STATUS fallback).
+  - UIDVALIDITY change or new folder state restarts LastUID at 0.
+  - Bounded UID range with 64-bit arithmetic (no uint32 overflow); HasMore is
+    returned and the cursor advances only to the last UID actually consumed.
+  - Phase 1 FETCH: UID, ENVELOPE, INTERNALDATE, BODYSTRUCTURE (extended).
+  - Phase 2 FETCH per message: BODY.PEEK[HEADER], BODY.PEEK[part] and
+    BODY.PEEK[part.MIME] for text/plain and text/html only.
+  - joinMIMEPart ALWAYS prepends BODY[part.MIME]; body content is never used to
+    infer headers (a body may legitimately begin with a Content-Type line).
+  - If the server omits BODY[part.MIME], headers are synthesized from
+    BODYSTRUCTURE (media type, charset, transfer encoding) so decoding remains
+    correct instead of guessing from content.
+  - decodeText reads text parts in full (no truncation). On message.Read or
+    io.ReadAll failure it returns the original encoded text; if io.ReadAll
+    produced a partial decoded prefix, both the prefix and the raw encoded
+    text are preserved. The failure is marked with a bounded
+    X-Invoice-Guard-Decode-Error header and a sanitized Warn log, so the cursor
+    never commits a silently emptied part.
+  - Attachments are metadata-only from BODYSTRUCTURE (filename, content type,
+    encoded size); binary bodies are never downloaded. A missing BODYSTRUCTURE
+    is an explicit error, never a BODY[] fallback.
+  - No STORE/flag changes, so messages are never marked read.
+  - A UID that vanishes between snapshot and body fetch is skipped safely; a
+    fetch/connection error returns no cursor so the next pass retries.
+  - ProviderMessageID = folderID:uidvalidity:uid (same UID in different folders
+    is distinct); cross-folder fingerprint = sender + subject + sender time +
+    Message-ID + decoded bodies; Historical/Phase derived from the cursor
+    baseline (pipeline-owned baseline is preserved).
+
+qq.NewOnboarding(repo, cfg, source) *Onboarding
+  - Begin(actorID): 256-bit bearer token, only SHA-256 hash persisted in a
+    SecureSession with purpose qq_setup and TTL (default 10m). PublicBaseURL
+    must be absolute HTTPS (or empty for a relative path); validation happens
+    before any session is stored.
+  - ServeHTTP only accepts /setup/qq (and trailing slash).
+  - Transport: direct r.TLS, or a RemoteAddr inside cfg.TrustedProxyCIDRs with
+    X-Forwarded-Proto: https. Empty CIDR list trusts no proxy. Forged forwarded
+    headers from untrusted peers are rejected. PublicBaseURL alone is never
+    treated as proof of HTTPS.
+  - GET validates the hashed token and renders the form; it never consumes the
+    token and never echoes it.
+  - POST requires application/x-www-form-urlencoded, bounds the body to 16 KiB,
+    validates the session and address, performs the real IMAP validation, and
+    only then consumes the token and persists the account+credential.
+  - Persistence is one Store.Transaction when the repository implements
+    core.Store (consume + upsert + SaveAccount + PutCredential); otherwise the
+    sequential path is used. No network call happens inside the transaction.
+  - Existing (provider, address) accounts are reused: owner mismatch returns
+    ErrUnauthorized (HTTP 403), same owner re-enables the account, updates the
+    credential, preserves CreatedAt and history, and avoids the
+    UNIQUE(provider,address) violation.
+  - Responses set Cache-Control: no-store, Pragma: no-cache,
+    Referrer-Policy: no-referrer, X-Content-Type-Options: nosniff,
+    X-Frame-Options: DENY and a restrictive CSP. Secrets are never echoed or
+    logged; persist failures are logged without the underlying error value.
+
+Tests
+-----
+73 tests total (51 imap, 22 qq), using a real in-process TLS IMAP server
+(github.com/emersion/go-imap/v2/imapserver) and fake repositories that embed
+core.Repository/core.Store. Coverage: imap 84.8%, qq 83.6%.
+
+Covered scenarios include: default config; address/domain and host allowlists;
+empty/control-character codes; invalid authorization code; untrusted TLS cert;
+InsecureSkipVerify rejection; silent TLS peer; silent IMAP greeting; shorter
+context deadline; folder roles and stable IDs; unicode MIME with
+quoted-printable and base64; attachment metadata and no attachment section
+download; UIDVALIDITY reset; same UID in different folders with equal
+fingerprint; bounded batches without skipping; vanished UID; connection failure
+without a cursor; auth failure; missing credential; provider mismatch; no STORE;
+context cancellation; 9 MiB text not truncated; missing BODYSTRUCTURE; UID range
+overflow; HTTPS/proxy trust matrix; GET no-consume; POST content-type/oversize;
+invalid code stores nothing; atomic success; replay; concurrent replay; account
+reuse; owner conflict with transaction rollback; malformed/expired session;
+non-Store repository path; security headers.
+
+Acceptance-rework regressions added:
+  - Corrupted base64 text part: raw encoded content preserved, decode-failure
+    header set, no silent empty.
+  - Corrupted quoted-printable text part: content preserved (Go's QP reader is
+    lenient and passes invalid escapes through).
+  - Partial io.ReadAll: partial decoded prefix plus remaining raw text kept.
+  - Plain part without BODY[part.MIME]: headers synthesized from BODYSTRUCTURE,
+    full body preserved, no false decode-failure marker.
+  - Body beginning with a Content-Type line: never mistaken for MIME headers;
+    full body preserved.
+  - joinMIMEPart always prepends headers.
+
+Actual commands and results
+---------------------------
+$ gofmt -l internal/providers/imap internal/providers/qq
+(no output)
+
+$ go vet ./internal/providers/imap/... ./internal/providers/qq/...
+(exit 0)
+
+$ go test ./internal/providers/imap/... ./internal/providers/qq/... -count=1
+ok  email-invoice-guard/internal/providers/imap  0.765s
+?   email-invoice-guard/internal/providers/imap/imaptest  [no test files]
+ok  email-invoice-guard/internal/providers/qq    0.369s
+
+$ go test -race ./internal/providers/imap/... ./internal/providers/qq/... -count=1
+ok  email-invoice-guard/internal/providers/imap  2.176s
+?   email-invoice-guard/internal/providers/imap/imaptest  [no test files]
+ok  email-invoice-guard/internal/providers/qq    1.445s
+
+$ go test -cover ./internal/providers/imap/ ./internal/providers/qq/ -count=1
+ok  email-invoice-guard/internal/providers/imap  0.985s  coverage: 84.8% of statements
+ok  email-invoice-guard/internal/providers/qq    0.388s  coverage: 83.6% of statements
+
+$ go build ./...
+(success)
+
+$ go test ./... -count=1
+ok  email-invoice-guard/internal/core              0.307s
+ok  email-invoice-guard/internal/providers/imap    0.690s
+?   email-invoice-guard/internal/providers/imap/imaptest  [no test files]
+ok  email-invoice-guard/internal/providers/qq      0.348s
+
+$ git diff --check e67852b...HEAD
+(exit 0; the LESSONS.md EOF blank line is fixed)
+
+$ git diff-tree --no-commit-id --name-only -r HEAD
+LESSONS.md
+internal/providers/imap/message.go
+internal/providers/imap/message_test.go
+internal/providers/imap/sync.go
+internal/providers/imap/sync_test.go
+
+Unresolved issues / dependency requests
+---------------------------------------
+- None. go.mod/go.sum were not modified. go-imap/v2 v2.0.0-beta.9,
+  go-message v0.18.2, go-sasl and x/text were already pinned and available.
+- T08 final wiring/integration is intentionally out of scope.
+
+Security risks / limitations
+----------------------------
+- cfg.Timeout bounds the entire connection lifetime (min with the caller's ctx
+  deadline). A very large batch or slow server needs a larger configured
+  timeout; this is deliberate anti-hang behavior.
+- The setup POST has no application-level rate limiting; deployment should add
+  edge limits (T08).
+- Reverse-proxy trust is opt-in only through TrustedProxyCIDRs; default empty
+  means direct TLS is mandatory. Invalid CIDR entries fail closed.
+- The authorization code is held in memory during validation and passed to the
+  repository, which encrypts it per schema. It is never logged or echoed.
+- On a text decode/read failure the raw encoded content is preserved and marked
+  with X-Invoice-Guard-Decode-Error; downstream parsers should treat that
+  header as a diagnostic and may still see encoded text. Attachment bytes are
+  never fetched.
+- On the non-Store repository path, the token is consumed before SaveAccount;
+  a save failure after consumption loses that setup link. The Store path is
+  atomic. Production storage implements core.Store.
+- No real QQ account or credential was used; all IMAP integration tests use a
+  local TLS server with a test CA.
+
+Acceptance criteria
+-------------------
+[x] Public API compiles exactly: imap.New, Source.Validate, core.MailSource,
+    qq.NewOnboarding, Begin, ServeHTTP.
+[x] Required sync, MIME, cursor, TLS, onboarding and security behavior
+    implemented with real runtime code (no stubs/TODOs).
+[x] Injected mocks exercise failure, restart, race, replay and security paths.
+[x] No secrets, no permanent fake implementations, no skipped tests.
+[x] Owned tests pass, including -race; gofmt and go vet are clean.
+[x] Dependencies and shared contracts untouched; only allowlisted paths plus
+    append-only LESSONS.md committed.
+[x] Acceptance-rework items fixed: no silent text loss, strict MIME joining,
+    LESSONS.md EOF format.
+[x] result.txt and commits supplied; branch not pushed/merged/rebase.
