@@ -1,0 +1,11 @@
+.env
+*.db
+*.db-shm
+*.db-wal
+*.key
+bin/
+coverage.out
+.worktrees/
+SPEC.md
+result.txt
+.DS_Store
