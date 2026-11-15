@@ -3,6 +3,7 @@ package parser
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"email-invoice-guard/internal/core"
@@ -33,6 +34,22 @@ func TestNewRegistryRegistersRFCHOST(t *testing.T) {
 	}
 	if parsers[0].Version == "" {
 		t.Fatal("registered parser must advertise a version")
+	}
+}
+
+func TestNewWithTrustedSendersAcceptsForwarder(t *testing.T) {
+	body := strings.Replace(fixtureText(t),
+		"https://my.rfchost.com/viewinvoice.php?id=143058\n", "", 1)
+	email := core.NormalizedEmail{
+		From:     core.Address{Address: "w2084151024@gmail.com"},
+		TextBody: body,
+	}
+	inv, err := NewWithTrustedSenders([]string{"w2084151024@gmail.com"}).Parse(context.Background(), email)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inv.Number != "143058" {
+		t.Fatalf("number = %q", inv.Number)
 	}
 }
 

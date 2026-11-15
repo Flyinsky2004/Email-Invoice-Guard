@@ -73,7 +73,7 @@ func Run(ctx context.Context, cfg core.Config, logger *slog.Logger) error {
 		logger.Warn("microsoft onboarding disabled: MICROSOFT_CLIENT_ID is empty")
 	}
 
-	parsers := parser.New()
+	parsers := parser.NewWithTrustedSenders(cfg.Invoice.TrustedSenders)
 	linker := assets.New()
 	syncService := syncengine.New(store, sources, parsers, linker, cfg, logger)
 	payments := lifecycle.New(store, cfg.Telegram.AllowedUserIDs)

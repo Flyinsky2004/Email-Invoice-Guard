@@ -114,6 +114,42 @@ func TestMatchForeignSenderWithLookalikeHost(t *testing.T) {
 	}
 }
 
+func TestMatchTrustedForwarderWithoutURL(t *testing.T) {
+	body := strings.Replace(fixtureText(t),
+		"https://my.rfchost.com/viewinvoice.php?id=143058\n", "", 1)
+	email := fixtureEmail(t)
+	email.From = core.Address{Name: "王吉颖", Address: "W2084151024@Gmail.com"}
+	email.TextBody = body
+
+	p := NewRFCHOSTWithTrustedSenders([]string{"w2084151024@gmail.com"})
+	if !p.Match(email) {
+		t.Fatal("trusted forwarder should match without the invoice URL")
+	}
+	inv, err := p.Parse(email)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inv.Number != "143058" || inv.URL != "" {
+		t.Fatalf("invoice = %q / %q", inv.Number, inv.URL)
+	}
+	if inv.Status != core.PendingConfirmation {
+		t.Fatalf("status = %q, want pending", inv.Status)
+	}
+}
+
+func TestMatchUntrustedForwarderWithoutURL(t *testing.T) {
+	body := strings.Replace(fixtureText(t),
+		"https://my.rfchost.com/viewinvoice.php?id=143058\n", "", 1)
+	email := fixtureEmail(t)
+	email.From = core.Address{Address: "someone@gmail.com"}
+	email.TextBody = body
+
+	p := NewRFCHOSTWithTrustedSenders([]string{"w2084151024@gmail.com"})
+	if p.Match(email) {
+		t.Fatal("untrusted forwarder without the invoice URL must not match")
+	}
+}
+
 func TestMatchRequiresInvoiceStructure(t *testing.T) {
 	email := fixtureEmail(t)
 	email.TextBody = "Hello, this is a friendly message."

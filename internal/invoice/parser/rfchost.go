@@ -16,12 +16,28 @@ const (
 	rfchostDomain     = "rfchost.com"
 )
 
-type rfchostParser struct{}
+type rfchostParser struct {
+	trustedSenders map[string]struct{}
+}
 
 var _ core.InvoiceParser = (*rfchostParser)(nil)
 
-// NewRFCHOST returns the RFCHOST invoice parser.
-func NewRFCHOST() core.InvoiceParser { return &rfchostParser{} }
+// NewRFCHOST returns the RFCHOST invoice parser without extra trusted
+// forwarders.
+func NewRFCHOST() core.InvoiceParser { return NewRFCHOSTWithTrustedSenders(nil) }
+
+// NewRFCHOSTWithTrustedSenders returns the RFCHOST parser with an explicit
+// forwarder allowlist. Trusted senders are accepted even when the body does
+// not carry the trusted invoice URL; invoice structure is still required.
+func NewRFCHOSTWithTrustedSenders(senders []string) core.InvoiceParser {
+	set := make(map[string]struct{}, len(senders))
+	for _, raw := range senders {
+		if addr := normalizeSenderAddress(raw); addr != "" {
+			set[addr] = struct{}{}
+		}
+	}
+	return &rfchostParser{trustedSenders: set}
+}
 
 func (p *rfchostParser) Vendor() string  { return rfchostVendor }
 func (p *rfchostParser) Version() string { return rfchostVersion }
@@ -36,10 +52,34 @@ func (p *rfchostParser) Match(email core.NormalizedEmail) bool {
 	if !hasInvoiceStructure(text) {
 		return false
 	}
-	if rfchostSender(email.From.Address) {
+	if rfchostSender(email.From.Address) || p.trustedSender(email.From.Address) {
 		return true
 	}
 	return hasTrustedInvoiceURL(text)
+}
+
+func (p *rfchostParser) trustedSender(address string) bool {
+	if len(p.trustedSenders) == 0 {
+		return false
+	}
+	addr := normalizeSenderAddress(address)
+	if addr == "" {
+		return false
+	}
+	_, ok := p.trustedSenders[addr]
+	return ok
+}
+
+// normalizeSenderAddress extracts the bare address from a display-name form
+// and lowercases it.
+func normalizeSenderAddress(address string) string {
+	address = strings.TrimSpace(address)
+	if i := strings.LastIndex(address, "<"); i >= 0 {
+		if j := strings.Index(address[i:], ">"); j > 0 {
+			address = address[i+1 : i+j]
+		}
+	}
+	return strings.ToLower(strings.TrimSpace(address))
 }
 
 // Parse returns a PENDING_CONFIRMATION invoice only when every mandatory field
@@ -84,17 +124,12 @@ func rfchostSender(address string) bool {
 }
 
 func senderHost(address string) string {
-	address = strings.TrimSpace(address)
-	if i := strings.LastIndex(address, "<"); i >= 0 {
-		if j := strings.Index(address[i:], ">"); j > 0 {
-			address = address[i+1 : i+j]
-		}
-	}
+	address = normalizeSenderAddress(address)
 	at := strings.LastIndex(address, "@")
 	if at < 0 || at == len(address)-1 {
 		return ""
 	}
-	return strings.ToLower(strings.TrimSpace(address[at+1:]))
+	return strings.TrimSpace(address[at+1:])
 }
 
 // ValidateInvoiceURL keeps merchant-specific payment URL rules beside the template.

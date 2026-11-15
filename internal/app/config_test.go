@@ -58,6 +58,7 @@ func baseEnv(t *testing.T) {
 	t.Setenv("MANUAL_SCHEDULER_INTERVAL", "")
 	t.Setenv("MANUAL_WIZARD_TTL", "")
 	t.Setenv("MANUAL_MAX_CATCHUP_MONTHS", "")
+	t.Setenv("INVOICE_TRUSTED_SENDERS", "")
 	t.Setenv("ALLOW_INSECURE_HTTP", "")
 }
 
@@ -260,6 +261,38 @@ func TestLoadConfigManualOverrides(t *testing.T) {
 	}
 	if m.MonthEndPolicy != "last_day" || m.MaxCatchUpMonths != 6 {
 		t.Fatalf("manual policy overrides: %+v", m)
+	}
+}
+
+func TestLoadConfigInvoiceTrustedSendersDefault(t *testing.T) {
+	baseEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Invoice.TrustedSenders) != 1 || cfg.Invoice.TrustedSenders[0] != "w2084151024@gmail.com" {
+		t.Fatalf("trusted senders default = %v", cfg.Invoice.TrustedSenders)
+	}
+}
+
+func TestLoadConfigInvoiceTrustedSendersOverride(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("INVOICE_TRUSTED_SENDERS", " A@Example.com , b@example.com,a@example.com ")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	got := cfg.Invoice.TrustedSenders
+	if len(got) != 2 || got[0] != "a@example.com" || got[1] != "b@example.com" {
+		t.Fatalf("trusted senders = %v", got)
+	}
+}
+
+func TestLoadConfigRejectsBadTrustedSender(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("INVOICE_TRUSTED_SENDERS", "not-an-address")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "INVOICE_TRUSTED_SENDERS") {
+		t.Fatalf("want INVOICE_TRUSTED_SENDERS error, got %v", err)
 	}
 }
 

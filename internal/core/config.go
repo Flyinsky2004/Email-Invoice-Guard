@@ -12,6 +12,14 @@ type Config struct {
 	Microsoft                                MicrosoftConfig
 	IMAP                                     IMAPConfig
 	Manual                                   ManualReminderConfig
+	Invoice                                  InvoiceConfig
+}
+
+// InvoiceConfig configures merchant invoice parsing. TrustedSenders are extra
+// forwarder addresses the RFCHOST parser accepts even when the body does not
+// carry the trusted invoice URL.
+type InvoiceConfig struct {
+	TrustedSenders []string
 }
 type TelegramConfig struct {
 	Token, BaseURL            string

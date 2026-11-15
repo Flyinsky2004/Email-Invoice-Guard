@@ -21,9 +21,13 @@ type Registry struct {
 var _ core.ParserRegistry = (*Registry)(nil)
 
 // New returns a registry with the built-in RFCHOST parser registered.
-func New() *Registry {
+func New() *Registry { return NewWithTrustedSenders(nil) }
+
+// NewWithTrustedSenders returns a registry whose RFCHOST parser also accepts
+// the supplied forwarder addresses.
+func NewWithTrustedSenders(senders []string) *Registry {
 	r := &Registry{}
-	if err := r.Register(NewRFCHOST()); err != nil {
+	if err := r.Register(NewRFCHOSTWithTrustedSenders(senders)); err != nil {
 		panic("parser: register built-in RFCHOST parser: " + err.Error())
 	}
 	return r

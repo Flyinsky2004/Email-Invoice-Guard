@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/mail"
 	"net/url"
 	"os"
 	"strconv"
@@ -45,6 +46,10 @@ const (
 	defaultManualScheduler  = 30 * time.Second
 	defaultManualWizardTTL  = 10 * time.Minute
 	defaultManualCatchUp    = 24
+
+	// defaultTrustedSenders are forwarder addresses trusted out of the box by
+	// the RFCHOST parser. INVOICE_TRUSTED_SENDERS replaces this list.
+	defaultTrustedSenders = "w2084151024@gmail.com"
 
 	encryptionKeySize = 32
 	microsoftCallback = "/oauth/microsoft/callback"
@@ -161,6 +166,9 @@ func loadConfig(get func(string) string) (core.Config, error) {
 	add(err)
 
 	cfg.Manual, err = loadManual(l)
+	add(err)
+
+	cfg.Invoice, err = loadInvoice(l)
 	add(err)
 
 	if len(problems) > 0 {
@@ -402,6 +410,47 @@ func loadManual(l envLoader) (core.ManualReminderConfig, error) {
 		return core.ManualReminderConfig{}, errors.Join(problems...)
 	}
 	return cfg, nil
+}
+
+// loadInvoice parses the optional trusted-forwarder list. An empty value keeps
+// the built-in default; a non-empty value replaces it.
+func loadInvoice(l envLoader) (core.InvoiceConfig, error) {
+	raw := l.str("INVOICE_TRUSTED_SENDERS")
+	if raw == "" {
+		raw = defaultTrustedSenders
+	}
+	senders, err := parseAddressList("INVOICE_TRUSTED_SENDERS", raw)
+	if err != nil {
+		return core.InvoiceConfig{}, err
+	}
+	return core.InvoiceConfig{TrustedSenders: senders}, nil
+}
+
+// parseAddressList validates a comma-separated list of email addresses,
+// lowercases them and removes duplicates.
+func parseAddressList(key, raw string) ([]string, error) {
+	var out []string
+	seen := make(map[string]bool)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		addr, err := mail.ParseAddress(part)
+		if err != nil || addr.Address == "" {
+			return nil, fmt.Errorf("%s: invalid email address", key)
+		}
+		v := strings.ToLower(strings.TrimSpace(addr.Address))
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s: at least one address is required", key)
+	}
+	return out, nil
 }
 
 // parseBoolStrict accepts the documented boolean spellings and rejects anything
